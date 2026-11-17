@@ -47,6 +47,7 @@ Hướng dẫn chi tiết:
 - [Chạy hai N321](OFDM_N321_TX/docs/HUONG_DAN_2_N321.md)
 - [Giải mềm và interleaving](OFDM_N321_TX/docs/GIAI_MEM_INTERLEAVING.md)
 - [Điều chế thích ứng (ACM)](OFDM_N321_RX/docs/ACM.md)
+- [PC chỉ có một cổng mạng: N321 #1 tự phát file IQ](OFDM_N321_TX/docs/MOT_CONG_MANG.md)
 
 ## Trạng thái
 

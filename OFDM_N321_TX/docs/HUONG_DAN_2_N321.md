@@ -28,6 +28,9 @@ PC enp1s0 (192.168.180.1) ── switch 1G ──┬── SFP0 N321 #1 (TX) 192
 - PC phát dùng folder TX, PC thu dùng folder RX. Mỗi PC cài theo mục 3.
 - Hai N321 có thể cùng IP vì nằm trên hai mạng riêng. Khi đó chạy RX với `--args addr=192.168.180.3,master_clock_rate=200e6`.
 
+**Cách C: một PC chỉ có một cổng mạng, không có switch.** N321 #1 tự phát lại file IQ do PC tính sẵn, cổng mạng
+duy nhất của PC nối với N321 #2. Xem [MOT_CONG_MANG.md](MOT_CONG_MANG.md).
+
 ## 2. Đổi IP SFP0 của N321 thứ hai (chỉ cần cho cách A)
 
 Chỉ cắm **riêng** N321 #2 vào PC, rồi SSH vào (mặc định user `root`, không mật khẩu):

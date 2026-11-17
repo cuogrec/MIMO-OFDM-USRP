@@ -14,6 +14,7 @@ bash scripts/start_tx.sh --source file --input ~/Videos/clip.mp4 --seconds 60
 bash scripts/start_tx.sh --source webcam --input /dev/video0
 bash scripts/start_tx.sh --mimo smux --freq 921e6                      # RX phải dùng cùng tham số
 bash scripts/start_tx.sh --acm                                         # điều chế thích ứng, RX cũng --acm (docs/ACM.md)
+python3 tools/make_iq.py --source file --input clip.mp4                # PC 1 cổng mạng: N321 #1 tự phát (docs/MOT_CONG_MANG.md)
 
 bash scripts/sim_tx.sh                                    # mô phỏng qua ZeroMQ (RX chạy sim_rx.sh trước)
 ```
