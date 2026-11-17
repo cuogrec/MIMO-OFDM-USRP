@@ -31,6 +31,7 @@ Nếu không tìm thấy, khối vẫn hiện đúng cổng nhưng có tên `[TH
 | [E4] 2×2 channel simulator | Embedded, tắt sẵn | `blocks.MimoChannelSim` | Mô phỏng kênh 2×2 Rayleigh, SNR 20 dB, CFO 2 kHz |
 | [E5] SFO resampler | Embedded, tắt sẵn | `blocks.SfoResampler` | Mô phỏng lệch clock 5 ppm giữa hai máy |
 | QT GUI Frequency Sink | Có sẵn | — | Phổ thu tại RX2 A và RX2 B |
+| PDU to Tagged Stream → QT GUI Constellation Sink | Có sẵn | cổng `const` của `blocks.MimoRxSink` | **Chòm sao** ký hiệu dữ liệu sau cân bằng (MRC/SFBC/MMSE), 1 khung tốt mỗi 8 khung (`const_every`) |
 
 Các khối OFDM có sẵn của GNU Radio (`ofdm_tx/rx`, `header_payload_demux`…) chỉ hỗ trợ một anten, nên toàn bộ
 modem MIMO được đặt trong [E1] và [E2].

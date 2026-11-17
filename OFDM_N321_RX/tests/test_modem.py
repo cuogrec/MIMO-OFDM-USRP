@@ -122,6 +122,24 @@ def test_geometry():
     assert frame_samples("smux", "16qam", 80) == 880
 
 
+def test_constellation_snapshot():
+    """const_every=1: every good frame carries its equalised data symbols (for the GUI)."""
+    rng = np.random.default_rng(5)
+    for mode in MODES:
+        for mod in MODS:
+            tx, rx = Modulator(mode, mod), Demodulator(mode, mod)
+            rx.const_every = 1
+            pkt = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+            y = channel(tx.frame(pkt), np.array([[1, 0.3j], [-0.2, 0.9]]), 30, rng)
+            s0, p = rx.find(y)
+            (out, info), = rx.demodulate_batch(y, [s0], [p])
+            c = info["const"]
+            bps = 2 if mod == "qpsk" else 4
+            ideal = modulate(demodulate(c, bps), bps)
+            evm = 10 * np.log10(np.mean(np.abs(c - ideal) ** 2) / np.mean(np.abs(ideal) ** 2))
+            assert out == pkt and len(c) == rx.n_code and evm < -18, (mode, mod, len(c), evm)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

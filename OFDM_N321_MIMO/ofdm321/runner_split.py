@@ -163,20 +163,29 @@ def main_rx(argv=None):
     p.add_argument("--no-soft", dest="soft_decoding", action="store_const", const=False,
                    help="hard-decision RS only (for comparison)")
     p.add_argument("--compare", help="TX report.json or video_tx.ts to compare (same PC or copied)")
+    p.add_argument("--gui", action="store_true",
+                   help="window with the constellation (after equalisation) and the RX spectrum")
+    p.add_argument("--const-every", dest="const_every", type=int,
+                   help="one constellation snapshot every N good frames (default 8, 0 = off)")
     p.add_argument("--snr", dest="sim_snr_db", type=float)
     p.add_argument("--cfo", dest="sim_cfo_hz", type=float)
     p.add_argument("--sfo", dest="sim_sfo_ppm", type=float)
     p.add_argument("--channel", dest="sim_channel", choices=("identity", "rayleigh", "fixed"))
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding"])
+    s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
+                                "const_every"])
     run_dir = new_run("rx", s, a.mode, a.name)
     report = {"version": __version__, "role": "rx", "mode": a.mode, "settings": s.to_dict(),
               "capacity": capacity(s), "started": datetime.now().isoformat(), "status": "FAIL"}
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     player = None
+    gui = app = None
     try:
+        if a.gui:
+            from .rxgui import RxGui, ensure_app
+            app = ensure_app()               # QApplication must exist before any QT sink
         tb = gr.top_block("N321 MIMO RX", catch_exceptions=True)
         rx = MimoRxSink(s)
         vr = VideoReceiver(a.session, run_dir / "video_rx.ts", s.udp_port)
@@ -188,6 +197,7 @@ def main_rx(argv=None):
             tb.connect((usrp, 0), (rx, 0))
             tb.connect((usrp, 1), (rx, 1))
             keep.append(usrp)
+            iq = [(usrp, 0), (usrp, 1)]
         else:
             from gnuradio import zeromq
             srcz = zeromq.pull_source(gr.sizeof_gr_complex, 1, s.zmq_addr, 100, False, -1)
@@ -201,9 +211,13 @@ def main_rx(argv=None):
                 tb.connect((sfo, i), (ch, i))
                 tb.connect((ch, i), (rx, i))
             keep += [srcz, di, sfo, ch]
+            iq = [(ch, 0), (ch, 1)]
             report["hardware"] = {"zmq": s.zmq_addr, "sfo_ppm": s.sim_sfo_ppm, "cfo_hz": s.sim_cfo_hz,
                                   "snr_db": s.sim_snr_db, "channel": s.sim_channel}
         tb.msg_connect((rx, "pdus"), (vr, "pdus"))
+        if a.gui:
+            gui = RxGui(tb, rx, iq, s)
+            keep += gui.blocks
         tb._keep = keep
         tb.start()
         if a.play:
@@ -213,27 +227,56 @@ def main_rx(argv=None):
         LOG.info("RX listening (start the TX now). mimo=%s mod=%s f=%.6g MHz, Ctrl+C to stop",
                  s.mimo_mode, s.modulation, s.frequency / 1e6)
         limit = time.monotonic() + a.seconds
-        ended_at = None
-        while not stop.is_set() and time.monotonic() < limit:
-            time.sleep(1)
+        state = {"ended_at": None}
+
+        def tick():
+            """One monitor step (every second). Returns False when the RX should stop."""
             r, v = rx.snapshot(), vr.snapshot()
-            LOG.info("RX ok %d (soft %d) sig %d rs %d crc %d lost %d | session %s DATA %d missing %d END %s | "
-                     "SNR %s EVM %s cond %s dB | rx_rms %.4f",
-                     r["ok"], r["soft_decoded"], r["sig_fail"], r["rs_fail"], r["crc_fail"], r["lost_sync"], v["session"],
-                     v["data_packets"], v["missing_data_packets"], v["end_received"],
-                     None if r["snr_db"] is None else round(r["snr_db"], 1),
-                     None if r["evm_db"] is None else round(r["evm_db"], 1),
-                     None if r["cond_db"] is None else round(r["cond_db"], 1), r["rx_rms"])
+            line = ("RX ok %d (soft %d) sig %d rs %d crc %d lost %d | session %s DATA %d missing %d END %s | "
+                    "SNR %s EVM %s cond %s dB | rx_rms %.4f" % (
+                        r["ok"], r["soft_decoded"], r["sig_fail"], r["rs_fail"], r["crc_fail"], r["lost_sync"],
+                        v["session"], v["data_packets"], v["missing_data_packets"], v["end_received"],
+                        None if r["snr_db"] is None else round(r["snr_db"], 1),
+                        None if r["evm_db"] is None else round(r["evm_db"], 1),
+                        None if r["cond_db"] is None else round(r["cond_db"], 1), r["rx_rms"]))
+            LOG.info("%s", line)
+            if gui is not None:
+                gui.set_status(line.replace(" | ", "\n"))
+            if stop.is_set() or time.monotonic() >= limit:
+                return False
             if vr.ended.is_set():
-                ended_at = ended_at or time.monotonic()
-                if time.monotonic() - ended_at > 3:
+                state["ended_at"] = state["ended_at"] or time.monotonic()
+                if time.monotonic() - state["ended_at"] > 3:
+                    return False
+            return True
+
+        if gui is None:
+            while not stop.is_set() and time.monotonic() < limit:
+                time.sleep(1)
+                if not tick():
                     break
+        else:
+            from PyQt5 import Qt
+            gui.show()
+            timer = Qt.QTimer()
+            timer.timeout.connect(lambda: tick() or app.quit())
+            timer.start(1000)
+            app.lastWindowClosed.connect(app.quit)          # closing the window stops the RX
+            pulse = Qt.QTimer()                               # let Python see Ctrl+C while Qt runs
+            pulse.timeout.connect(lambda: stop.is_set() and app.quit())
+            pulse.start(200)
+            app.exec_()
+            timer.stop()
+            pulse.stop()
         tb.stop()
         tb.wait()
         vr.close()
         r, v = rx.snapshot(), vr.snapshot()
         ts = run_dir / "video_rx.ts"
         info = ffprobe_frames(ts) if ts.stat().st_size else None
+        if rx.last_const is not None:              # last constellation snapshot, for offline plots
+            import numpy as np
+            np.save(run_dir / "const_last.npy", rx.last_const)
         report.update(rx=r, video=v, video_rx_bytes=ts.stat().st_size,
                       video_rx_sha256=sha256_file(ts) if ts.stat().st_size else None, video_rx_frames=info)
         if a.compare:

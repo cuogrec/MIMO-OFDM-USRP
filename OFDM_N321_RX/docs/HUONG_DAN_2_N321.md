@@ -93,6 +93,11 @@ của RX trùng với sha256 TX in ra.
    bash scripts/start_rx.sh --play
    ```
    Đợi đến khi thấy dòng `RX listening`.
+   Muốn xem **chòm sao và phổ** trong lúc thu, thêm `--gui` (cần màn hình desktop):
+   ```bash
+   bash scripts/start_rx.sh --play --gui
+   ```
+   Đóng cửa sổ hoặc Ctrl+C thì RX dừng và vẫn ghi report như bình thường.
 3. **TX chạy sau** (folder TX):
    ```bash
    bash scripts/start_tx.sh                                               # testpattern 30 s
@@ -125,6 +130,28 @@ RX ok 9645 sig 1 rs 0 crc 0 lost 0 | session 859074745 DATA 2591 missing 0 END T
 | `SNR` / `EVM` | chất lượng kênh | QPSK: EVM < −12 dB; 16QAM: < −20 dB |
 | `cond` | độ khả nghịch của ma trận kênh H (dB) | smux cần dưới khoảng 10–15 dB |
 | `rx_rms` | biên độ thu | khoảng 0,005–0,2; lớn hơn 0,5 là sắp bão hòa → giảm `--rx-gain` |
+
+### Đọc cửa sổ `--gui`
+
+![RX GUI](img/rx_gui_smux_16qam.png)
+
+- **Trái: chòm sao sau cân bằng.** Ký hiệu dữ liệu của 1 khung tốt mỗi 8 khung, sau MRC / SFBC / MMSE
+  và bù pha bằng pilot, trước khi quyết định bit. QPSK có 4 đám tại (±0,71, ±0,71); 16QAM có 16 đám tại
+  ±0,32 / ±0,95. Với smux, hai luồng vẽ chung.
+- **Phải: phổ thu** RX A (xanh) và RX B (đỏ). Dải OFDM rộng khoảng ±406 kHz quanh tần số trung tâm.
+- **Dưới: dòng trạng thái**, giống log RX.
+
+| Chòm sao trông như | Nghĩa là | Làm gì |
+|---|---|---|
+| Đám nhỏ, tròn, tách rõ | kênh tốt (EVM < −20 dB) | có thể thử `16qam` hoặc `smux` |
+| Đám to, sát nhau | SNR thấp | đưa máy lại gần, tăng gain, dùng `alamouti` |
+| Đám kéo thành vệt cung tròn | pha còn trôi (CFO/SFO lớn, kênh thay đổi nhanh) | thử `--sync gpsdo` ở cả hai bên, giữ yên anten |
+| Một số điểm văng xa | nhiễu xung hoặc sóng mang con bị fading sâu | interleaver + giải mềm thường vẫn sửa được; xem `rs` |
+| Trống, không cập nhật | chưa có khung nào giải đúng | xem mục "ok đứng yên" bên dưới |
+| Phổ có dải OFDM nhưng ok = 0 | khác `--mimo/--mod/--freq` giữa hai máy | kiểm tra lại tham số hai bên |
+
+Mỗi lần chạy, ảnh chòm sao cuối cùng được lưu dạng số trong `runs/<lượt>/const_last.npy`
+(`numpy.load(...)` để vẽ lại). `--const-every N` đổi tần suất lấy mẫu chòm sao (0 = tắt).
 
 Xử lý khi gặp vấn đề:
 

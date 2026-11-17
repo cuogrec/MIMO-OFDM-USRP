@@ -10,6 +10,7 @@ python3 tests/test_modem.py
 
 bash scripts/start_rx.sh --play           # chạy TRƯỚC máy TX; tự dừng ~3 s sau khi nhận END
 bash scripts/start_rx.sh --mimo smux --freq 921e6 --play   # phải trùng tham số bên TX
+bash scripts/start_rx.sh --play --gui     # thêm cửa sổ chòm sao sau cân bằng + phổ 2 kênh
 python3 tools/compare_tx_rx.py <đường dẫn report.json của TX>   # video thu có giống hệt video phát không
 bash scripts/play_latest.sh               # xem lại video đã thu
 

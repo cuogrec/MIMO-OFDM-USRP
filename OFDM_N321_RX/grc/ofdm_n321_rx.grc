@@ -167,14 +167,22 @@ blocks:
       ch bi\xEAn x SNR sau c\xE2n b\u1EB1ng, h\u1EA1 khi c\xF3 nhi\u1EC5u xung) ->\n\
       descramble -> RS(248,216); n\u1EBFu th\u1EA5t b\u1EA1i: GI\u1EA2I M\u1EC0M xo\xE1\
       \ d\u1EA7n byte k\xE9m tin c\u1EADy (\u226432 erasure,\nt\u1ED1i \u0111a 30%\
-      \ th\u1EDDi gian th\u1EF1c) -> CRC32 -> PDU tr\xEAn c\u1ED5ng 'pdus'.\nHai N321\
-      \ c\xF3 clock ri\xEAng: CFO, l\u1EC7ch clock (SFO) v\xE0 pha \u0111\u01B0\u1EE3\
-      c b\xF9 tr\xEAn t\u1EEBng khung.\nIn th\u1ED1ng k\xEA (ok / soft / sig / rs\
-      \ / crc, SNR, EVM, cond H) khi d\u1EEBng.\n\"\"\"\nimport os\nimport sys\nimport\
-      \ numpy as np\nfrom gnuradio import gr\n\n\ndef _project_root():\n    \"\"\"\
-      Find the OFDM_N321_MIMO folder that contains the ofdm321 package.\"\"\"\n  \
-      \  here = globals().get(\"__file__\")\n    candidates = [os.environ.get(\"OFDM_N321_DIR\"\
-      , \"\")]\n    if here:\n        d = os.path.dirname(os.path.abspath(here))\n\
+      \ th\u1EDDi gian th\u1EF1c) -> CRC32 -> PDU tr\xEAn c\u1ED5ng 'pdus'.\nCH\xD2\
+      M SAO: c\u1ED5ng message 'const' xu\u1EA5t k\xFD hi\u1EC7u d\u1EEF li\u1EC7\
+      u SAU C\xC2N B\u1EB0NG (sau MRC/SFBC/MMSE v\xE0 b\xF9 pha\npilot, tr\u01B0\u1EDB\
+      c khi quy\u1EBFt \u0111\u1ECBnh bit) c\u1EE7a 1 khung t\u1ED1t m\u1ED7i const_every\
+      \ khung, d\u1EA1ng PDU c32\n(QPSK 992 \u0111i\u1EC3m, 16QAM 496 \u0111i\u1EC3\
+      m; smux g\u1ED3m c\u1EA3 2 lu\u1ED3ng). N\u1ED1i: 'const' -> PDU to Tagged Stream\n\
+      (complex) -> QT GUI Constellation Sink. const_every=0 t\u1EAFt. \u0110\xE1m\
+      \ \u0111i\u1EC3m tr\xF2n, g\u1ECDn = k\xEAnh t\u1ED1t;\nxoay = pha ch\u01B0\
+      a b\xF9; nho\xE8 th\xE0nh v\xF2ng = CFO/SFO l\u1EDBn; t\xE1ch \u0111\xF4i =\
+      \ sai k\xEAnh H.\nHai N321 c\xF3 clock ri\xEAng: CFO, l\u1EC7ch clock (SFO)\
+      \ v\xE0 pha \u0111\u01B0\u1EE3c b\xF9 tr\xEAn t\u1EEBng khung.\nIn th\u1ED1\
+      ng k\xEA (ok / soft / sig / rs / crc, SNR, EVM, cond H) khi d\u1EEBng.\n\"\"\
+      \"\nimport os\nimport sys\nimport numpy as np\nfrom gnuradio import gr\n\n\n\
+      def _project_root():\n    \"\"\"Find the OFDM_N321_MIMO folder that contains\
+      \ the ofdm321 package.\"\"\"\n    here = globals().get(\"__file__\")\n    candidates\
+      \ = [os.environ.get(\"OFDM_N321_DIR\", \"\")]\n    if here:\n        d = os.path.dirname(os.path.abspath(here))\n\
       \        up = os.path.dirname(d)\n        candidates += [d, up, os.path.join(up,\
       \ \"OFDM_N321_RX\"), os.path.join(up, \"OFDM_N321_TX\")]\n    home = os.path.expanduser(\"\
       ~/Desktop\")\n    candidates += [os.path.join(home, \"MIMO-OFDM-USRP-main\"\
@@ -199,18 +207,20 @@ blocks:
       \        try:\n            from ofdm321.blocks import MimoRxSink as B\n    \
       \        return B\n        except Exception as exc:  # noqa: BLE001\n      \
       \      print(\"[E2] import l\u1ED7i:\", exc)\n    return _missing(\"MIMO RX\"\
-      , [np.complex64, np.complex64], None, (), (\"pdus\",))\n\n\nclass blk(_base()):\n\
-      \    \"\"\"MIMO OFDM RX.\"\"\"\n\n    def __init__(self, mimo_mode=\"alamouti\"\
-      , modulation=\"qpsk\", sample_rate=1000000,\n                 sync_threshold=0.6,\
-      \ soft_decoding=True):\n        super().__init__(_settings(mimo_mode=mimo_mode,\
+      , [np.complex64, np.complex64], None, (), (\"pdus\", \"const\"))\n\n\nclass\
+      \ blk(_base()):\n    \"\"\"MIMO OFDM RX.\"\"\"\n\n    def __init__(self, mimo_mode=\"\
+      alamouti\", modulation=\"qpsk\", sample_rate=1000000,\n                 sync_threshold=0.6,\
+      \ soft_decoding=True, const_every=8):\n        super().__init__(_settings(mimo_mode=mimo_mode,\
       \ modulation=modulation, soft_decoding=bool(soft_decoding),\n              \
-      \                     sample_rate=float(sample_rate), sync_threshold=float(sync_threshold)))\n\
+      \                     const_every=int(const_every),\n                      \
+      \             sample_rate=float(sample_rate), sync_threshold=float(sync_threshold)))\n\
       \n    def stop(self):\n        if hasattr(self, \"snapshot\"):\n           \
       \ print(\"[E2]\", self.snapshot())\n        return True\n"
     affinity: ''
     alias: ''
     comment: "[E2] \u0111\u1ED3ng b\u1ED9, H 2x2, MRC/SFBC/MMSE, de-interleave, gi\u1EA3\
       i m\u1EC1m RS, CRC"
+    const_every: '8'
     maxoutbuf: '0'
     mimo_mode: mimo_mode
     minoutbuf: '0'
@@ -221,8 +231,8 @@ blocks:
   states:
     _io_cache: ('MIMO OFDM RX', 'blk', [('mimo_mode', "'alamouti'"), ('modulation',
       "'qpsk'"), ('sample_rate', '1000000'), ('sync_threshold', '0.6'), ('soft_decoding',
-      'True')], [('0', 'complex', 1), ('1', 'complex', 1)], [('pdus', 'message', 1)],
-      'MIMO OFDM RX.', [])
+      'True'), ('const_every', '8')], [('0', 'complex', 1), ('1', 'complex', 1)],
+      [('const', 'message', 1), ('pdus', 'message', 1)], 'MIMO OFDM RX.', [])
     bus_sink: false
     bus_source: false
     bus_structure: null
@@ -410,6 +420,116 @@ blocks:
     coordinate: [420, 740]
     rotation: 0
     state: disabled
+- name: gui_const_pdu
+  id: pdu_pdu_to_tagged_stream
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "PDU c32 -> lu\u1ED3ng (ch\xF2m sao)"
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    tag: '''packet_len'''
+    type: complex
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [820, 610]
+    rotation: 0
+    state: enabled
+- name: gui_constellation
+  id: qtgui_const_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '0.6'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: '"blue"'
+    color10: '"dark blue"'
+    color2: '"red"'
+    color3: '"green"'
+    color4: '"black"'
+    color5: '"cyan"'
+    color6: '"magenta"'
+    color7: '"yellow"'
+    color8: '"dark red"'
+    color9: '"dark green"'
+    comment: "K\xFD hi\u1EC7u d\u1EEF li\u1EC7u sau MRC/SFBC/MMSE: QPSK 4 \u0111\xE1\
+      m, 16QAM 16 \u0111\xE1m"
+    grid: 'True'
+    gui_hint: 0,1,1,1
+    label1: '''data symbols'''
+    label10: ''
+    label2: ''
+    label3: ''
+    label4: ''
+    label5: ''
+    label6: ''
+    label7: ''
+    label8: ''
+    label9: ''
+    legend: 'True'
+    marker1: '0'
+    marker10: '0'
+    marker2: '0'
+    marker3: '0'
+    marker4: '0'
+    marker5: '0'
+    marker6: '0'
+    marker7: '0'
+    marker8: '0'
+    marker9: '0'
+    name: "'Ch\xF2m sao sau c\xE2n b\u1EB1ng'"
+    nconnections: '1'
+    size: 248*8//(2 if modulation == 'qpsk' else 4)
+    style1: '0'
+    style10: '0'
+    style2: '0'
+    style3: '0'
+    style4: '0'
+    style5: '0'
+    style6: '0'
+    style7: '0'
+    style8: '0'
+    style9: '0'
+    tr_chan: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: ''''''
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    xmax: '1.5'
+    xmin: '-1.5'
+    ymax: '1.5'
+    ymin: '-1.5'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1060, 570]
+    rotation: 0
+    state: enabled
 - name: gui_spectrum
   id: qtgui_freq_sink_x
   parameters:
@@ -445,11 +565,11 @@ blocks:
     fftsize: '1024'
     freqhalf: 'True'
     grid: 'False'
-    gui_hint: ''
+    gui_hint: 0,0,1,1
     label: Relative Gain
-    label1: ''
+    label1: '''RX2 A'''
     label10: ''''''
-    label2: ''''''
+    label2: '''RX2 B'''
     label3: ''''''
     label4: ''''''
     label5: ''''''
@@ -482,8 +602,8 @@ blocks:
     width8: '1'
     width9: '1'
     wintype: window.WIN_BLACKMAN_hARRIS
-    ymax: '10'
-    ymin: '-140'
+    ymax: '-20'
+    ymin: '-120'
   states:
     bus_sink: false
     bus_source: false
@@ -1020,9 +1140,11 @@ blocks:
     state: enabled
 
 connections:
+- [e2_rx, const, gui_const_pdu, pdus]
 - [e2_rx, pdus, e3_video, pdus]
 - [e5_sfo, '0', e4_channel, '0']
 - [e5_sfo, '1', e4_channel, '1']
+- [gui_const_pdu, '0', gui_constellation, '0']
 - [sim_deinterleave, '0', e5_sfo, '0']
 - [sim_deinterleave, '1', e5_sfo, '1']
 - [sim_zmq_pull, '0', sim_deinterleave, '0']

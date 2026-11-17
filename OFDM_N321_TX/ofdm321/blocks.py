@@ -108,6 +108,12 @@ class MimoRxSink(gr.sync_block):
         self.expected = None          # index of the next frame start while tracking
         self.port = pmt.intern("pdus")
         self.message_port_register_out(self.port)
+        # Constellation: equalised data symbols of one good frame every `const_every` frames,
+        # published as a c32 PDU (pdu_to_tagged_stream -> QT GUI Constellation Sink).
+        self.const_port = pmt.intern("const")
+        self.message_port_register_out(self.const_port)
+        self.demod.const_every = int(getattr(s, "const_every", 8))
+        self.last_const = None
         self.lock = threading.Lock()
         self.stats = dict(detected=0, ok=0, sig_fail=0, rs_fail=0, crc_fail=0,
                           corrected_bytes=0, lost_sync=0, soft_decoded=0)
@@ -196,6 +202,11 @@ class MimoRxSink(gr.sync_block):
                 self._drop(s0 + SYM)
                 self.expected = None
                 return True
+            if "const" in info:
+                c = info["const"]
+                self.last_const = c
+                self.message_port_pub(self.const_port, pmt.cons(
+                    pmt.PMT_NIL, pmt.init_c32vector(len(c), c.tolist())))
             if packet is not None:
                 self.message_port_pub(self.port, pmt.cons(
                     pmt.PMT_NIL, pmt.init_u8vector(len(packet), list(packet))))

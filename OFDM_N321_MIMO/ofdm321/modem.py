@@ -328,6 +328,8 @@ class Demodulator:
         self.threshold = threshold
         self.backoff = backoff
         self.body_len = (4 + self.np) * SYM
+        self.const_every = 0              # >0: attach equalised symbols to every N-th good frame
+        self.n_code = CODE_BYTES * 8 // self.bps
 
     # -- synchronisation ------------------------------------------------
     def schmidl_cox(self, x):
@@ -437,6 +439,9 @@ class Demodulator:
                     "interleaver": INTERLEAVERS[d[1] >> 2 & 3],
                     "seq": struct.unpack(">H", d[2:4])[0]}
             self.count = getattr(self, "count", 0) + 1
+            if self.const_every and reason == "ok" and self.count % self.const_every == 0:
+                # constellation after equalisation (smux: both streams), before demapping
+                info["const"] = eq[k, :n_code].astype(np.complex64)
             if self.count % 8 == 1:                    # link statistics: every 8th frame only
                 p = float(np.mean(np.sum(np.abs(H[k, :, :self.n_tx][..., DATA_BINS]) ** 2, axis=1)))
                 info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(eq[k]))

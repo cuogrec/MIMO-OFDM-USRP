@@ -27,6 +27,7 @@ class Settings:
     tx_rms: float = 0.10             # per TX channel, digital fc32 full scale = 1.0
     interleaver: str = "block"       # TX: none | block | carrier (RX follows the SIG field)
     soft_decoding: bool = True       # RX: reliability-ranked erasure decoding of RS(248,216)
+    const_every: int = 8             # RX: one constellation snapshot every N good frames (0 = off)
     # --- N321 ------------------------------------------------------------
     device_args: str = "addr=192.168.20.2,master_clock_rate=200e6"
     subdev: str = "A:0 B:0"
