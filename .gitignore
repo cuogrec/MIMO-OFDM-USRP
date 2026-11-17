@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+runs/*
+!runs/.keep
+*.ts
+*.mp4
+*.npz
+*.zip
