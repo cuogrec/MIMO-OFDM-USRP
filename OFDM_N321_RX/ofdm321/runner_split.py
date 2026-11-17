@@ -282,6 +282,9 @@ def main_rx(argv=None):
         if a.play:
             player = subprocess.Popen(["ffplay", "-hide_banner", "-loglevel", "warning", "-fflags",
                                        "nobuffer", "-flags", "low_delay", "-framedrop",
+                                       # small probe: ffplay starts at the first keyframe instead of
+                                       # analysing ~5 s of stream first (that video was never shown)
+                                       "-probesize", "32768", "-analyzeduration", "500000",
                                        f"udp://127.0.0.1:{s.udp_port}?fifo_size=100000&overrun_nonfatal=1"])
         LOG.info("RX listening (start the TX now). mimo=%s mod=%s f=%.6g MHz, Ctrl+C to stop",
                  s.mimo_mode, s.modulation, s.frequency / 1e6)
