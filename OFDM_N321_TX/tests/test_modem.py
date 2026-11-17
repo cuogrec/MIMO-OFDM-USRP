@@ -140,6 +140,43 @@ def test_constellation_snapshot():
             assert out == pkt and len(c) == rx.n_code and evm < -18, (mode, mod, len(c), evm)
 
 
+def test_acm_frames_any_modulation():
+    """ACM: fixed-length frames, modulation per frame from SIG, several codewords each."""
+    from ofdm321.modem import codewords_per_frame
+    rng = np.random.default_rng(11)
+    H = np.array([[1, 0.3j], [-0.2, 0.9]])
+    for mode in MODES:
+        tx, rx = Modulator(mode, "qpsk", acm=True), Demodulator(mode, "qpsk", acm=True)
+        lens = set()
+        for mod in ("bpsk", "qpsk", "16qam", "64qam"):
+            n = codewords_per_frame(mode, mod)
+            pk = [rng.integers(0, 256, 212, dtype=np.uint8).tobytes() for _ in range(n)]
+            f = tx.frame(pk, mod)
+            lens.add(f.shape[1])
+            y = channel(f, H, 38, rng)
+            s0, p = rx.find(y)
+            (out, info), = rx.demodulate_batch(y, [s0], [p])
+            assert out == pk and info["modulation"] == mod, (mode, mod, info)
+        assert len(lens) == 1                         # receiver timing unchanged
+
+
+def test_acm_controller():
+    from ofdm321.acm import AcmController
+    c = AcmController("bpsk,qpsk,16qam,64qam", margin_db=1.0, hold_s=0.5)
+    import time
+    t = time.monotonic()          # reports stamped ahead of the clock: no timeout
+    for _ in range(30):                               # good link: climbs one step per hold time
+        t += 0.1
+        c.update(32.0, 0.0, c.modulation, now=t)
+    assert c.modulation == "64qam"
+    c.update(16.0, 0.0, "64qam", now=t + 0.1)        # deep fade: straight down
+    assert c.modulation == "qpsk"
+    c.update(16.0, 0.5, "64qam", now=t + 0.2)        # errors of frames still in flight: ignored
+    assert c.modulation == "qpsk"
+    c.update(16.0, 0.5, "qpsk", now=t + 0.3)         # errors in the new modulation: step down
+    assert c.modulation == "bpsk"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

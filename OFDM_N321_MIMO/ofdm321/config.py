@@ -12,7 +12,7 @@ APP_HEADER_BYTES = 24
 PACKET_BYTES = APP_HEADER_BYTES + TS_CHUNK_BYTES          # 212
 
 MIMO_MODES = ("siso", "simo", "alamouti", "smux")
-MODULATIONS = {"qpsk": 2, "16qam": 4}
+MODULATIONS = {"bpsk": 1, "qpsk": 2, "16qam": 4, "64qam": 6}
 MASTER_CLOCK_RATES = (200e6, 245.76e6, 250e6)
 
 
@@ -28,6 +28,13 @@ class Settings:
     interleaver: str = "block"       # TX: none | block | carrier (RX follows the SIG field)
     soft_decoding: bool = True       # RX: reliability-ranked erasure decoding of RS(248,216)
     const_every: int = 8             # RX: one constellation snapshot every N good frames (0 = off)
+    # --- adaptive coding & modulation (both sides must agree on acm) ----
+    acm: bool = False                # per-frame modulation chosen from RX feedback
+    acm_modcods: str = "bpsk,qpsk,16qam,64qam"   # TX: allowed modulations (ladder)
+    acm_margin_db: float = 1.0       # TX: extra SNR above the calibrated threshold
+    acm_host: str = "127.0.0.1"      # RX: IP of the TX PC (feedback destination)
+    acm_port: int = 5003             # UDP port of the feedback channel
+    acm_fb_delay_s: float = 0.0      # RX: extra feedback delay (0.5 ~ GEO satellite round trip)
     # --- N321 ------------------------------------------------------------
     device_args: str = "addr=192.168.20.2,master_clock_rate=200e6"
     subdev: str = "A:0 B:0"
@@ -55,6 +62,7 @@ class Settings:
     sim_seed: int = 1
     sim_sfo_ppm: float = 0.0          # two-machine simulation: sample-clock offset
     zmq_addr: str = "tcp://127.0.0.1:5560"   # two-process simulation link (TX PUSH -> RX PULL)
+    sim_snr_profile: str = ""         # time-varying SNR: sine:6:30:40 | steps:28,18,8:10 | ramp:30:5:60
 
     @property
     def bits_per_symbol(self):
@@ -105,6 +113,11 @@ class Settings:
             raise ValueError("clock/time source must be internal, external or gpsdo")
         if self.subdev.split() != ["A:0", "B:0"]:
             raise ValueError("N321 two-channel subdev must be 'A:0 B:0'")
+        if self.acm:
+            from .acm import parse_modcods
+            parse_modcods(self.acm_modcods)
+            if not 1024 <= self.acm_port <= 65535 or self.acm_port == self.udp_port:
+                raise ValueError("acm_port must be 1024..65535 and differ from udp_port")
         return self
 
     def to_dict(self):

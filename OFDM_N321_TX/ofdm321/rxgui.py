@@ -28,7 +28,7 @@ class RxGui:
 
     def __init__(self, tb, rx, iq, settings, title="N321 MIMO RX"):
         s = settings
-        n = rx.demod.n_code
+        n = rx.demod.n_const
         self.win = Qt.QWidget()
         self.win.setWindowTitle(f"{title} | {s.mimo_mode} {s.modulation} {s.frequency / 1e6:.3f} MHz")
         lay = Qt.QGridLayout(self.win)

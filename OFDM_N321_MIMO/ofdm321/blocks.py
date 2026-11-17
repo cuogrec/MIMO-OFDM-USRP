@@ -11,7 +11,7 @@ import pmt
 from gnuradio import gr
 
 from .config import PACKET_BYTES
-from .modem import Modulator, Demodulator, SYM, N_CP
+from .modem import Modulator, Demodulator, SYM, N_CP, codewords_per_frame
 from .protocol import DATA, IDLE, pack_packet, unpack_packet
 
 LOG = logging.getLogger(__name__)
@@ -20,13 +20,25 @@ LOG = logging.getLogger(__name__)
 class MimoTxSource(gr.sync_block):
     """Application packets -> continuous 2-channel baseband (IDLE frames when empty)."""
 
-    def __init__(self, settings, session, throttle=False):
+    def __init__(self, settings, session, throttle=False, acm=None):
+        """acm: None (fixed modulation) or an acm.AcmController that picks the
+        modulation of every frame (frames then carry several packets)."""
         gr.sync_block.__init__(self, "MIMO OFDM TX source", [], [np.complex64, np.complex64])
         s = settings
-        self.mod = Modulator(s.mimo_mode, s.modulation, s.frame_gap_samples, s.tx_rms, s.interleaver)
+        self.acm = acm
+        self.mod = Modulator(s.mimo_mode, s.modulation, s.frame_gap_samples, s.tx_rms, s.interleaver,
+                             acm=acm is not None)
         self.packets = queue.Queue(maxsize=s.queue_packets)
         self.idle = pack_packet(IDLE, session)
-        self.idle_frame = self.mod.frame(self.idle)   # cached: IDLE costs no CPU
+        self.idle_frames = {}
+        if acm is None:
+            self.idle_frame = self.mod.frame(self.idle)   # cached: IDLE costs no CPU
+        else:
+            for m in acm.modcods:
+                n = codewords_per_frame(s.mimo_mode, m)
+                self.idle_frames[m] = self.mod.frame([self.idle] * n, m)
+        self.mod_frames = {}                              # frames sent per modulation (ACM)
+        self.packets_sent = 0
         self.pending = np.zeros((2, 0), np.complex64)
         self.pos = 0
         self.throttle = throttle
@@ -62,16 +74,20 @@ class MimoTxSource(gr.sync_block):
         written = 0
         while written < n:
             if self.pos >= self.pending.shape[1]:
-                try:
-                    raw = self.packets.get_nowait()
-                    self.pending = self.mod.frame(raw)
-                except queue.Empty:
-                    raw = self.idle
-                    self.pending = self.idle_frame
+                if self.acm is not None:
+                    self._next_acm_frame()
+                else:
+                    try:
+                        raw = self.packets.get_nowait()
+                        self.pending = self.mod.frame(raw)
+                    except queue.Empty:
+                        raw = self.idle
+                        self.pending = self.idle_frame
+                    with self.lock:
+                        self.frames += 1
+                        self.data_frames += raw[5] == DATA
+                        self.packets_sent += raw[5] != IDLE
                 self.pos = 0
-                with self.lock:
-                    self.frames += 1
-                    self.data_frames += raw[5] == DATA
             take = min(n - written, self.pending.shape[1] - self.pos)
             out0[written:written + take] = self.pending[0, self.pos:self.pos + take]
             out1[written:written + take] = self.pending[1, self.pos:self.pos + take]
@@ -80,11 +96,36 @@ class MimoTxSource(gr.sync_block):
         self.produced += n
         return n
 
+    def _next_acm_frame(self):
+        m = self.acm.modulation
+        n = codewords_per_frame(self.mod.mode, m)
+        batch = []
+        while len(batch) < n:
+            try:
+                batch.append(self.packets.get_nowait())
+            except queue.Empty:
+                break
+        if batch:
+            data = sum(r[5] == DATA for r in batch)
+            self.pending = self.mod.frame(batch + [self.idle] * (n - len(batch)), m)
+        else:
+            data = 0
+            self.pending = self.idle_frames[m]
+        with self.lock:
+            self.frames += 1
+            self.data_frames += data
+            self.packets_sent += len(batch)
+            self.mod_frames[m] = self.mod_frames.get(m, 0) + 1
+
     def snapshot(self):
         with self.lock:
-            return {"tx_frames": self.frames, "tx_data_frames": self.data_frames,
-                    "tx_enqueued_data": self.enqueued_data, "tx_queue": self.packets.qsize(),
-                    "frame_samples": self.mod.frame_len}
+            out = {"tx_frames": self.frames, "tx_data_frames": self.data_frames,
+                   "tx_enqueued_data": self.enqueued_data, "tx_queue": self.packets.qsize(),
+                   "tx_packets": self.packets_sent, "frame_samples": self.mod.frame_len}
+            if self.acm is not None:
+                out.update(acm_modulation=self.acm.modulation, acm_snr_db=self.acm.snr,
+                           acm_switches=self.acm.switches, acm_frames=dict(self.mod_frames))
+            return out
 
 
 class MimoRxSink(gr.sync_block):
@@ -99,7 +140,13 @@ class MimoRxSink(gr.sync_block):
     def __init__(self, settings):
         gr.sync_block.__init__(self, "MIMO OFDM RX", [np.complex64, np.complex64], [])
         s = settings
-        self.demod = Demodulator(s.mimo_mode, s.modulation, s.sync_threshold, soft=s.soft_decoding)
+        self.acm = bool(getattr(s, "acm", False))
+        self.demod = Demodulator(s.mimo_mode, s.modulation, s.sync_threshold, soft=s.soft_decoding,
+                                 acm=self.acm)
+        self.snr_eff = None                    # filtered effective SNR (ACM feedback)
+        self.modulation = None if self.acm else s.modulation
+        self.mod_frames = {}
+        self.cw_ok = self.cw_bad = 0
         self.frame_len = (4 + self.demod.np) * SYM + s.frame_gap_samples
         self.body = self.demod.body_len
         self.cap = 1 << 18
@@ -191,7 +238,19 @@ class MimoRxSink(gr.sync_block):
             reason = info["reason"]
             with self.lock:
                 self.stats["detected"] += 1
-                self.stats[{"ok": "ok", "sig": "sig_fail", "rs": "rs_fail", "crc": "crc_fail"}[reason]] += 1
+                if "reasons" in info:              # ACM: count every codeword
+                    for r in info["reasons"]:
+                        self.stats[{"ok": "ok", "rs": "rs_fail", "crc": "crc_fail"}[r]] += 1
+                    good = sum(r == "ok" for r in info["reasons"])
+                    self.cw_ok += good
+                    self.cw_bad += len(info["reasons"]) - good
+                    m = info["modulation"]
+                    self.modulation = m
+                    self.mod_frames[m] = self.mod_frames.get(m, 0) + 1
+                    x = info["snr_eff_db"]
+                    self.snr_eff = x if self.snr_eff is None else 0.8 * self.snr_eff + 0.2 * x
+                else:
+                    self.stats[{"ok": "ok", "sig": "sig_fail", "rs": "rs_fail", "crc": "crc_fail"}[reason]] += 1
                 self.stats["corrected_bytes"] += info.get("corrected", 0)
                 self.stats["soft_decoded"] += bool(info.get("soft_erasures"))
                 self.interleaver = info.get("interleaver", self.interleaver)
@@ -207,9 +266,9 @@ class MimoRxSink(gr.sync_block):
                 self.last_const = c
                 self.message_port_pub(self.const_port, pmt.cons(
                     pmt.PMT_NIL, pmt.init_c32vector(len(c), c.tolist())))
-            if packet is not None:
+            for pk in (packet if isinstance(packet, list) else [packet] if packet is not None else []):
                 self.message_port_pub(self.port, pmt.cons(
-                    pmt.PMT_NIL, pmt.init_u8vector(len(packet), list(packet))))
+                    pmt.PMT_NIL, pmt.init_u8vector(len(pk), list(pk))))
         nxt = starts[-1] + self.frame_len
         self._drop(nxt - SYM)
         self.expected = SYM
@@ -219,7 +278,14 @@ class MimoRxSink(gr.sync_block):
         with self.lock:
             return dict(self.stats, snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
                         rx_rms=self.rx_rms, tracking=self.expected is not None,
-                        interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped)
+                        interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped,
+                        acm=self.acm, modulation=self.modulation, snr_eff_db=self.snr_eff,
+                        acm_frames=dict(self.mod_frames))
+
+    def acm_state(self):
+        with self.lock:
+            return {"snr_eff_db": self.snr_eff, "cw_ok": self.cw_ok, "cw_bad": self.cw_bad,
+                    "modulation": self.modulation}
 
 
 class MimoChannelSim(gr.sync_block):
@@ -249,6 +315,10 @@ class MimoChannelSim(gr.sync_block):
         self.noise = (sigma * (rng.standard_normal((2, n + 65536)) +
                                1j * rng.standard_normal((2, n + 65536)))).astype(np.complex64)
         self.noise_pos = 0
+        self.rate = s.sample_rate
+        self.samples = 0
+        self.profile = parse_snr_profile(getattr(s, "sim_snr_profile", ""))
+        self.snr_now = self.snr_db
         self.H = self.H.astype(np.complex64)
         self.H2 = self.H2.astype(np.complex64)
 
@@ -260,13 +330,39 @@ class MimoChannelSim(gr.sync_block):
         self.mem = ext[:, -3:]
         if n > 65536:
             raise RuntimeError("channel simulator chunk too large")
-        y += self.noise[:, self.noise_pos:self.noise_pos + n]
+        noise = self.noise[:, self.noise_pos:self.noise_pos + n]
+        if self.profile is not None:            # time-varying SNR (ACM tests): scale the noise
+            self.snr_now = self.profile(self.samples / self.rate)
+            noise = noise * np.float32(10 ** ((self.snr_db - self.snr_now) / 20))
+        self.samples += n
+        y += noise
         self.noise_pos = (self.noise_pos + n) % (self.noise.shape[1] - 65536)
         rot = np.exp(2j * np.pi * (self.cfo * np.arange(n)) + 1j * self.phase).astype(np.complex64)
         self.phase = (self.phase + 2 * np.pi * self.cfo * n) % (2 * np.pi)
         output_items[0][:] = y[0] * rot
         output_items[1][:] = y[1] * rot
         return n
+
+
+def parse_snr_profile(text):
+    """'' -> None (fixed SNR). Otherwise f(t) -> SNR dB:
+         sine:MIN:MAX:PERIOD        e.g. sine:6:30:40
+         steps:V1,V2,...:DWELL      e.g. steps:28,18,8,14,24:10  (repeats)
+         ramp:START:END:DURATION    linear, then holds END"""
+    if not text:
+        return None
+    kind, _, rest = str(text).partition(":")
+    parts = rest.split(":")
+    if kind == "sine":
+        lo, hi, period = map(float, parts)
+        return lambda t: lo + (hi - lo) * 0.5 * (1 + np.cos(2 * np.pi * t / period))
+    if kind == "steps":
+        vals, dwell = [float(v) for v in parts[0].split(",")], float(parts[1])
+        return lambda t: vals[int(t // dwell) % len(vals)]
+    if kind == "ramp":
+        a, b, dur = map(float, parts)
+        return lambda t: a + (b - a) * min(1.0, t / dur)
+    raise ValueError("sim_snr_profile: sine:MIN:MAX:PERIOD | steps:V1,V2,..:DWELL | ramp:A:B:SECONDS")
 
 
 class VideoReceiver(gr.basic_block):
@@ -339,34 +435,52 @@ class VideoReceiver(gr.basic_block):
 
 
 class SfoResampler(gr.basic_block):
-    """Simulate a sample-clock offset between two separate radios (linear interpolation).
+    """Simulate a sample-clock offset between two separate radios.
 
-    Output sample k is taken at input time k * (1 + ppm*1e-6). Simulation only.
+    Output sample k is taken at input time k * (1 + ppm*1e-6) with a 16-tap
+    windowed-sinc fractional-delay interpolator (256 phases): flat over the OFDM
+    band, unlike linear interpolation which attenuates the edge carriers by up to
+    ~11 dB when the fractional delay is near 0.5. Simulation only.
     """
+    TAPS, PHASES, HIST = 16, 256, 8
 
     def __init__(self, ppm):
         gr.basic_block.__init__(self, "SFO resampler", [np.complex64, np.complex64],
                                 [np.complex64, np.complex64])
         self.step = 1.0 + ppm * 1e-6
-        self.t = 0.0                       # read position relative to the first unread input
+        self.t = float(self.HIST)          # read position relative to the first unread input
+        off = np.arange(self.TAPS) - (self.HIST - 1)            # -7 .. 8
+        d = np.arange(self.PHASES + 1)[:, None] / self.PHASES
+        x = off[None, :] - d
+        h = np.sinc(x) * (0.42 + 0.5 * np.cos(np.pi * x / 8.5) + 0.08 * np.cos(2 * np.pi * x / 8.5))
+        self.table = (h / h.sum(axis=1, keepdims=True)).astype(np.float32)
+        self.off = off
 
     def forecast(self, noutput_items, ninputs):
-        need = int(noutput_items * self.step) + 2
+        need = int(noutput_items * self.step) + self.TAPS + 2
         return [need] * ninputs
 
     def general_work(self, input_items, output_items):
         n_in = min(len(input_items[0]), len(input_items[1]))
-        n_out = min(len(output_items[0]), int((n_in - 2 - self.t) / self.step))
+        n_out = min(len(output_items[0]), int((n_in - self.TAPS - 1 - self.t) / self.step))
         if n_out <= 0:
             return 0
-        pos = self.t + self.step * np.arange(n_out)
-        i0 = pos.astype(np.int64)
-        frac = (pos - i0).astype(np.float32)
-        for ch in (0, 1):
-            x = input_items[ch]
-            output_items[ch][:n_out] = x[i0] * (1 - frac) + x[i0 + 1] * frac
+        # The fractional delay drifts by only ppm*1e-6 per sample: keep it constant over
+        # blocks of 1024 outputs (drift < 0.01 sample) -> 16 vector multiply-adds per block.
+        B = 1024
+        for b in range(0, n_out, B):
+            m = min(B, n_out - b)
+            p0 = self.t + self.step * b
+            i0 = int(np.floor(p0))
+            taps = self.table[int(round((p0 - i0) * self.PHASES))]
+            for ch in (0, 1):
+                x = input_items[ch]
+                acc = np.zeros(m, np.complex64)
+                for k, o in enumerate(self.off):
+                    acc += taps[k] * x[i0 + o:i0 + o + m]
+                output_items[ch][b:b + m] = acc
         end = self.t + self.step * n_out
-        used = int(end)
+        used = max(0, int(end) - self.HIST)
         self.t = end - used
         self.consume_each(used)
         return n_out

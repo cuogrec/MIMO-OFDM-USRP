@@ -32,7 +32,10 @@ def common_args(p):
     p.add_argument("--mode", choices=("rf", "sim"), default="rf")
     p.add_argument("--config", default=str(ROOT / "config/default.json"))
     p.add_argument("--mimo", dest="mimo_mode", choices=("siso", "simo", "alamouti", "smux"))
-    p.add_argument("--mod", dest="modulation", choices=("qpsk", "16qam"))
+    p.add_argument("--mod", dest="modulation", choices=("bpsk", "qpsk", "16qam", "64qam"))
+    p.add_argument("--acm", action="store_const", const=True,
+                   help="adaptive modulation: TX picks BPSK..64QAM per frame from RX feedback (both sides)")
+    p.add_argument("--acm-port", dest="acm_port", type=int, help="UDP port of the feedback channel (5003)")
     p.add_argument("--rate", dest="sample_rate", type=float)
     p.add_argument("--freq", dest="frequency", type=float)
     p.add_argument("--args", dest="device_args")
@@ -43,7 +46,8 @@ def common_args(p):
 
 
 def settings_from(a, extra):
-    keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr"] + extra
+    keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr",
+            "acm", "acm_port"] + extra
     over = {k: getattr(a, k) for k in keys}
     if a.sync:
         over.update(clock_source=a.sync, time_source=a.sync)
@@ -83,9 +87,13 @@ def main_tx(argv=None):
     p.add_argument("--warmup", type=float, default=5, help="IDLE seconds before video (RX locks)")
     p.add_argument("--source", choices=("testpattern", "webcam", "file"), default="testpattern")
     p.add_argument("--input")
+    p.add_argument("--acm-modcods", dest="acm_modcods", help="ACM ladder, e.g. qpsk,16qam,64qam")
+    p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
+                   "(never above --tx-gain)")
+    p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver"])
+    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db"])
     require_ffmpeg()
     run_dir = new_run("tx", s, a.mode, a.name)
     session = secrets.randbits(32)
@@ -94,13 +102,23 @@ def main_tx(argv=None):
               "settings": s.to_dict(), "capacity": cap, "started": datetime.now().isoformat(),
               "status": "FAIL"}
     LOG.info("TX session=%d mimo=%s mod=%s interleaver=%s Fs=%.3g f=%.6g MHz, TS capacity %.0f kb/s",
-             session, s.mimo_mode, s.modulation, s.interleaver, s.sample_rate, s.frequency / 1e6,
-             cap["ts_capacity_bps_after_rs8_8"] / 1e3)
+             session, s.mimo_mode, "ACM " + s.acm_modcods if s.acm else s.modulation, s.interleaver,
+             s.sample_rate, s.frequency / 1e6, cap["ts_capacity_bps_after_rs8_8"] / 1e3)
+    if s.acm:
+        LOG.info("ACM TS capacity per modulation (kb/s): %s | video TS mux %d kb/s",
+                 {m: round(v / 1e3) for m, v in cap["acm_ts_capacity_bps"].items()}, s.ts_muxrate // 1000)
+    ctl = fb = None
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     try:
         tb = gr.top_block("N321 MIMO TX", catch_exceptions=True)
-        src = MimoTxSource(s, session, throttle=(a.mode == "sim"))
+        if s.acm:
+            from .acm import AcmController, FeedbackReceiver
+            ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db)
+            fb = FeedbackReceiver(ctl, s.acm_port, session)
+            fb.start()
+            LOG.info("ACM: waiting for RX feedback on UDP %d (starts with %s)", s.acm_port, ctl.modulation)
+        src = MimoTxSource(s, session, throttle=(a.mode == "sim"), acm=ctl)
         keep = [src]
         if a.mode == "rf":
             from .hardware import configure_direction, make_radio, validate_rf
@@ -119,8 +137,18 @@ def main_tx(argv=None):
             tb.connect(il, sink)
             keep += [il, sink]
             report["hardware"] = {"zmq": s.zmq_addr}
+        gain_profile = None
+        if a.tx_gain_profile:
+            from .blocks import parse_snr_profile
+            gain_profile = parse_snr_profile(a.tx_gain_profile)
+            peak = max(gain_profile(t / 10) for t in range(6000))
+            if peak > s.tx_gain + 1e-9 or min(gain_profile(t / 10) for t in range(6000)) < 0:
+                raise ValueError(f"--tx-gain-profile reaches {peak} dB: keep it within 0..tx_gain ({s.tx_gain})")
+            if a.mode != "rf":
+                LOG.warning("--tx-gain-profile only acts on the radio (use --snr-profile at the RX in sim)")
         tb._keep = keep
         tb.start()
+        t_start = time.monotonic()
         LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
         t_end = time.monotonic() + a.warmup
         while time.monotonic() < t_end and not stop.is_set():
@@ -129,14 +157,31 @@ def main_tx(argv=None):
         enc.start()
         while not stop.is_set() and not enc.done.is_set():
             time.sleep(1)
+            if gain_profile is not None and a.mode == "rf":
+                g = gain_profile(time.monotonic() - t_start)
+                for ch in (0, 1):
+                    usrp.set_gain(g, ch)
+                LOG.info("TX gain %.1f dB (profile)", g)
             t = src.snapshot()
-            LOG.info("TX data %d | queue %d | frames %d", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"])
+            if s.acm:
+                LOG.info("TX data %d | queue %d | frames %d | ACM %s (RX SNR_eff %s dB, %d switches, loop %s s)",
+                         t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"], t["acm_modulation"],
+                         None if t["acm_snr_db"] is None else round(t["acm_snr_db"], 1), t["acm_switches"],
+                         round(ctl.latency[-1], 2) if ctl.latency else None)
+            else:
+                LOG.info("TX data %d | queue %d | frames %d", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"])
         while not stop.is_set() and src.snapshot()["tx_queue"] > 0:
             time.sleep(0.2)
         time.sleep(2)                        # trailing IDLE: RX closes the last group
         tb.stop()
         tb.wait()
         ts = run_dir / "video_tx.ts"
+        if ctl is not None:
+            fb.close()
+            lat = sorted(ctl.latency)
+            report["acm"] = {"switches": ctl.switches, "reports": ctl.reports, "frames": src.snapshot()["acm_frames"],
+                             "loop_latency_s_median": lat[len(lat) // 2] if lat else None,
+                             "history": list(ctl.history)}
         report.update(tx=src.snapshot(), encoder_error=enc.error, video_tx_bytes=ts.stat().st_size,
                       video_tx_sha256=sha256_file(ts), video_tx_frames=ffprobe_frames(ts))
         if not enc.error and ts.stat().st_size > 0 and not stop.is_set():
@@ -171,10 +216,15 @@ def main_rx(argv=None):
     p.add_argument("--cfo", dest="sim_cfo_hz", type=float)
     p.add_argument("--sfo", dest="sim_sfo_ppm", type=float)
     p.add_argument("--channel", dest="sim_channel", choices=("identity", "rayleigh", "fixed"))
+    p.add_argument("--snr-profile", dest="sim_snr_profile",
+                   help="SIM: time-varying SNR, e.g. sine:6:30:40 or steps:28,18,8,14:10")
+    p.add_argument("--acm-host", dest="acm_host", help="ACM: IP of the TX PC (default 127.0.0.1)")
+    p.add_argument("--fb-delay", dest="acm_fb_delay_s", type=float,
+                   help="ACM: extra feedback delay in s (0.25-0.5 emulates a GEO satellite)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
-                                "const_every"])
+                                "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s"])
     run_dir = new_run("rx", s, a.mode, a.name)
     report = {"version": __version__, "role": "rx", "mode": a.mode, "settings": s.to_dict(),
               "capacity": capacity(s), "started": datetime.now().isoformat(), "status": "FAIL"}
@@ -182,6 +232,7 @@ def main_rx(argv=None):
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     player = None
     gui = app = None
+    ch_sim = None
     try:
         if a.gui:
             from .rxgui import RxGui, ensure_app
@@ -211,6 +262,7 @@ def main_rx(argv=None):
                 tb.connect((sfo, i), (ch, i))
                 tb.connect((ch, i), (rx, i))
             keep += [srcz, di, sfo, ch]
+            ch_sim = ch
             iq = [(ch, 0), (ch, 1)]
             report["hardware"] = {"zmq": s.zmq_addr, "sfo_ppm": s.sim_sfo_ppm, "cfo_hz": s.sim_cfo_hz,
                                   "snr_db": s.sim_snr_db, "channel": s.sim_channel}
@@ -220,6 +272,13 @@ def main_rx(argv=None):
             keep += gui.blocks
         tb._keep = keep
         tb.start()
+        fbs = None
+        if s.acm:
+            from .acm import FeedbackSender
+            fbs = FeedbackSender(rx, vr, s.acm_host, s.acm_port, delay_s=s.acm_fb_delay_s)
+            fbs.start()
+            LOG.info("ACM: feedback -> %s:%d every 0.1 s (extra delay %.2f s)", s.acm_host, s.acm_port,
+                     s.acm_fb_delay_s)
         if a.play:
             player = subprocess.Popen(["ffplay", "-hide_banner", "-loglevel", "warning", "-fflags",
                                        "nobuffer", "-flags", "low_delay", "-framedrop",
@@ -239,6 +298,11 @@ def main_rx(argv=None):
                         None if r["snr_db"] is None else round(r["snr_db"], 1),
                         None if r["evm_db"] is None else round(r["evm_db"], 1),
                         None if r["cond_db"] is None else round(r["cond_db"], 1), r["rx_rms"]))
+            if s.acm:
+                line += " | ACM %s SNR_eff %s dB" % (r["modulation"], None if r["snr_eff_db"] is None
+                                                      else round(r["snr_eff_db"], 1))
+                if a.mode == "sim" and ch_sim is not None and ch_sim.profile is not None:
+                    line += " (sim SNR %.1f)" % ch_sim.snr_now
             LOG.info("%s", line)
             if gui is not None:
                 gui.set_status(line.replace(" | ", "\n"))
@@ -268,6 +332,8 @@ def main_rx(argv=None):
             app.exec_()
             timer.stop()
             pulse.stop()
+        if fbs is not None:
+            fbs.close()
         tb.stop()
         tb.wait()
         vr.close()

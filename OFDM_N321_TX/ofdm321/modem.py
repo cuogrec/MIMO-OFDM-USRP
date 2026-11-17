@@ -27,6 +27,14 @@ Interleaving decides which carriers/OFDM symbols one RS byte occupies:
              frequency-selective fading, weak against impulse noise)
 The SIG field carries the interleaver id; the receiver follows it per frame.
 
+ACM (adaptive coding and modulation, --acm): every frame has the same length
+(NP_ACM = 42 data symbols) and carries as many 248-byte codewords as its
+modulation allows: 1-stream BPSK 1, QPSK 2, 16QAM 4, 64QAM 6 (smux twice as
+many). The modulation is chosen per frame by the transmitter (from the SNR the
+receiver reports back) and written in SIG (byte 1: bit 7 = ACM, bits 4..6 mode,
+bits 0..1 modulation). Fixed frame length keeps the receiver timing unchanged;
+the receiver demaps each frame with the modulation its SIG announces.
+
 Soft decoding: every equalised symbol gets a reliability (distance to the
 decision boundary x post-equaliser SNR of its carrier/stream, reduced when the
 null carriers of that OFDM symbol show extra noise = impulse). When ordinary
@@ -58,7 +66,11 @@ MESSAGE_BYTES = inner_rs.MESSAGE_BYTES     # 216 = 212 app + CRC32
 CSD_SAMPLES = 4                            # cyclic shift of TX1 STF
 SIG_MAGIC = 0xA5
 MODE_CODES = {"siso": 0, "simo": 1, "alamouti": 2, "smux": 3}
-MOD_CODES = {"qpsk": 0, "16qam": 1}
+MOD_CODES = {"qpsk": 0, "16qam": 1, "bpsk": 2, "64qam": 3}
+MOD_NAMES = {v: k for k, v in MOD_CODES.items()}
+BPS = {"bpsk": 1, "qpsk": 2, "16qam": 4, "64qam": 6}
+ACM_FLAG = 0x80
+NP_ACM = 42                                   # data symbols of every ACM frame
 INTERLEAVERS = ("none", "carrier", "block")   # id = index, sent in SIG bits 2..3
 INTERLEAVE_MASK = 0xC
 SOFT_ERASURES = (2, 4, 6, 8, 12, 16, 20, 24, 28, 32)
@@ -88,10 +100,27 @@ def tables():
 def _levels(bits_per_axis):
     if bits_per_axis == 1:
         return np.array([1.0, -1.0])                                # b=0 -> +1
-    return np.array([-3.0, -1.0, 3.0, 1.0]) / np.sqrt(5)            # gray: 00,01,10,11
+    if bits_per_axis == 2:
+        return np.array([-3.0, -1.0, 3.0, 1.0]) / np.sqrt(5)        # gray: 00,01,10,11
+    return _pam_gray(bits_per_axis)[0]
+
+
+@lru_cache(maxsize=None)
+def _pam_gray(m):
+    """Gray PAM with 2^m levels: level[bits value] and the sorted amplitudes,
+    normalised so that the complex constellation (I and Q) has unit power."""
+    M = 1 << m
+    amp = (2 * np.arange(M) - (M - 1)) / np.sqrt((M * M - 1) / 3)   # per-axis power 1
+    level = np.empty(M)
+    gray = np.arange(M) ^ (np.arange(M) >> 1)
+    level[gray] = amp
+    bits = ((gray[:, None] >> np.arange(m)[::-1]) & 1).astype(np.uint8)   # bits of sorted amp
+    return level, amp, bits
 
 
 def modulate(bits, bps):
+    if bps == 1:
+        return (1.0 - 2.0 * bits.astype(float)).astype(complex)
     half = bps // 2
     lv = _levels(half)
     b = bits.reshape(-1, bps)
@@ -103,11 +132,38 @@ def modulate(bits, bps):
 def demodulate(symbols, bps):
     """Hard decision, inverse of modulate() (gray, per axis)."""
     re, im = symbols.real, symbols.imag
+    if bps == 1:
+        return (re < 0).astype(np.uint8)
     if bps == 2:
         return np.stack([re < 0, im < 0], axis=1).reshape(-1).astype(np.uint8)
-    t = 2 / np.sqrt(10)
-    return np.stack([re > 0, np.abs(re) < t, im > 0, np.abs(im) < t],
-                    axis=1).reshape(-1).astype(np.uint8)
+    if bps == 4:
+        t = 2 / np.sqrt(10)
+        return np.stack([re > 0, np.abs(re) < t, im > 0, np.abs(im) < t],
+                        axis=1).reshape(-1).astype(np.uint8)
+    m = bps // 2
+    _, amp, bits = _pam_gray(m)
+    scale = np.sqrt(2)
+    def axis(v):
+        idx = np.clip(np.round((v * scale - amp[0]) / (amp[1] - amp[0])), 0, len(amp) - 1).astype(int)
+        return bits[idx]
+    return np.concatenate([axis(re), axis(im)], axis=1).reshape(-1)
+
+
+def crc8(data):
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def acm_sig_info(byte1, seq):
+    """ACM SIG: 24 info bits (mode/modulation byte, seq low byte, CRC8), sent twice on
+    carriers 24 apart -> soft combining gives ~3 dB and frequency diversity, so the
+    header is decodable wherever BPSK payload is."""
+    head = bytes([byte1, seq & 0xFF])
+    return np.unpackbits(np.frombuffer(head + bytes([crc8(head)]), np.uint8))
 
 
 def crc16(data):
@@ -121,15 +177,23 @@ def crc16(data):
 
 
 # ----------------------------------------------------------------- geometry
-def payload_symbols(mode, modulation):
-    bps = 2 if modulation == "qpsk" else 4
+def payload_symbols(mode, modulation, acm=False):
+    if acm:
+        return NP_ACM
+    bps = BPS[modulation]
     streams = 2 if mode == "smux" else 1
     per_symbol = N_DATA * bps * streams
     return -(-CODE_BYTES * 8 // per_symbol)
 
 
-def frame_samples(mode, modulation, gap):
-    return (4 + payload_symbols(mode, modulation)) * SYM + gap
+def frame_samples(mode, modulation, gap, acm=False):
+    return (4 + payload_symbols(mode, modulation, acm)) * SYM + gap
+
+
+def codewords_per_frame(mode, modulation):
+    """ACM: number of 248-byte codewords in one NP_ACM frame."""
+    streams = 2 if mode == "smux" else 1
+    return NP_ACM * N_DATA * BPS[modulation] * streams // (CODE_BYTES * 8)
 
 
 @lru_cache(maxsize=None)
@@ -157,11 +221,25 @@ def interleave_perm(mode, modulation, interleaver):
 def bit_reliability(symbols, weight, bps):
     """|LLR|-like reliability of every bit, same order as demodulate()."""
     re, im = np.abs(symbols.real), np.abs(symbols.imag)
+    if bps == 1:
+        return re * weight
     if bps == 2:
         out = np.stack([re, im], axis=1)
-    else:
+    elif bps == 4:
         t = 2 / np.sqrt(10)
         out = np.stack([re, np.abs(re - t), im, np.abs(im - t)], axis=1)
+    else:                                     # max-log |LLR| per bit, per axis (64QAM)
+        m = bps // 2
+        _, amp, bits = _pam_gray(m)
+        amp = amp / np.sqrt(2)
+        def axis(v):
+            d = (v[:, None] - amp[None, :]) ** 2                     # (n, M)
+            r = []
+            for j in range(m):
+                one = bits[:, j] == 1
+                r.append(np.abs(d[:, one].min(axis=1) - d[:, ~one].min(axis=1)))
+            return np.stack(r, axis=1)
+        out = np.concatenate([axis(symbols.real), axis(symbols.imag)], axis=1)
     return (out * weight[:, None]).reshape(-1)
 
 
@@ -225,15 +303,18 @@ def decode_codeword(raw, reliability=None):
 
 # ----------------------------------------------------------------- transmitter
 class Modulator:
-    def __init__(self, mode, modulation, gap=80, tx_rms=0.1, interleaver="block"):
+    def __init__(self, mode, modulation, gap=80, tx_rms=0.1, interleaver="block", acm=False):
         if interleaver not in INTERLEAVERS:
             raise ValueError(f"interleaver must be one of {INTERLEAVERS}")
+        self.acm = acm
+        if acm:
+            interleaver = "none"          # ACM frames: codewords in plain order
         self.mode, self.modulation = mode, modulation
         self.interleaver = interleaver
-        self.perm = interleave_perm(mode, modulation, interleaver)
-        self.bps = 2 if modulation == "qpsk" else 4
+        self.perm = None if acm else interleave_perm(mode, modulation, interleaver)
+        self.bps = BPS[modulation]
         self.n_tx = 2 if mode in ("alamouti", "smux") else 1
-        self.np = payload_symbols(mode, modulation)
+        self.np = payload_symbols(mode, modulation, acm)
         self.gap = gap
         self.scale = tx_rms
         self.seq = 0
@@ -269,25 +350,38 @@ class Modulator:
             grid /= np.sqrt(2)                      # total power per carrier = 1
         return grid
 
-    def sig_bits(self, seq):
-        flag = INTERLEAVERS.index(self.interleaver) << 2
-        head = bytes([SIG_MAGIC, MODE_CODES[self.mode] << 4 | MOD_CODES[self.modulation] | flag]) \
+    def sig_bits(self, seq, modulation=None):
+        flag = INTERLEAVERS.index(self.interleaver) << 2 | (ACM_FLAG if self.acm else 0)
+        mod = MOD_CODES[modulation or self.modulation]
+        if self.acm:
+            b24 = acm_sig_info(MODE_CODES[self.mode] << 4 | mod | flag, seq)
+            return np.concatenate([b24, b24])
+        head = bytes([SIG_MAGIC, MODE_CODES[self.mode] << 4 | mod | flag]) \
             + struct.pack(">H", seq & 0xFFFF)
         data = head + struct.pack(">H", crc16(head))
         return np.unpackbits(np.frombuffer(data, np.uint8))
 
-    def frame(self, packet):
-        """212-byte application packet -> (2, frame_len) complex64."""
-        raw = encode_packet(packet)
-        bits = np.unpackbits(raw)
-        cap = self.np * N_DATA * self.bps * (2 if self.mode == "smux" else 1)
-        bits = np.concatenate([bits, np.zeros(cap - bits.size, np.uint8)])
-        syms = modulate(bits, self.bps)
+    def frame(self, packet, modulation=None):
+        """212-byte application packet -> (2, frame_len) complex64.
+        ACM: `packet` is a list of codewords_per_frame(mode, modulation) packets."""
+        modulation = modulation or self.modulation
+        bps = BPS[modulation]
+        if self.acm:
+            bits = np.unpackbits(np.concatenate([encode_packet(p) for p in packet]))
+        else:
+            bits = np.unpackbits(encode_packet(packet))
+        cap = self.np * N_DATA * bps * (2 if self.mode == "smux" else 1)
+        if bits.size > cap:
+            raise ValueError("too many codewords for this frame")
+        # unused tail: random bits, so the constellation stays uniform
+        fill = np.random.RandomState(self.seq & 0xFFFF).randint(0, 2, cap - bits.size).astype(np.uint8)
+        bits = np.concatenate([bits, fill])
+        syms = modulate(bits, bps)
         if self.perm is not None:
             placed = np.empty_like(syms)
             placed[self.perm] = syms
             syms = placed
-        sig = (1.0 - 2.0 * self.sig_bits(self.seq)).astype(complex)[None, :]
+        sig = (1.0 - 2.0 * self.sig_bits(self.seq, modulation)).astype(complex)[None, :]
         if self.mode == "smux":
             data = syms.reshape(self.np, N_DATA, 2)
             per_tx = np.stack([data[..., 0], data[..., 1]])
@@ -314,22 +408,24 @@ class Modulator:
 class Demodulator:
     """Stateless per-frame demodulation given the frame start index."""
 
-    def __init__(self, mode, modulation, threshold=0.6, backoff=3, soft=True, soft_cpu=0.3):
+    def __init__(self, mode, modulation, threshold=0.6, backoff=3, soft=True, soft_cpu=0.3, acm=False):
         self.mode, self.modulation = mode, modulation
+        self.acm = acm
         self.soft = soft
         self.soft_cpu = soft_cpu          # max share of wall time spent in erasure trials
         self.soft_budget, self.soft_clock = 0.5, time.monotonic()
         self.soft_skipped = 0
         self.perms = [interleave_perm(mode, modulation, name) for name in INTERLEAVERS]
-        self.bps = 2 if modulation == "qpsk" else 4
+        self.bps = BPS[modulation]
         self.n_tx = 2 if mode in ("alamouti", "smux") else 1
         self.n_rx = 1 if mode == "siso" else 2
-        self.np = payload_symbols(mode, modulation)
+        self.np = payload_symbols(mode, modulation, acm)
         self.threshold = threshold
         self.backoff = backoff
         self.body_len = (4 + self.np) * SYM
         self.const_every = 0              # >0: attach equalised symbols to every N-th good frame
         self.n_code = CODE_BYTES * 8 // self.bps
+        self.n_const = 1008 if acm else self.n_code      # points per constellation snapshot
 
     # -- synchronisation ------------------------------------------------
     def schmidl_cox(self, x):
@@ -397,12 +493,20 @@ class Demodulator:
         noise = np.mean(np.abs(F[:, :, 1:3][..., NULL_BINS]) ** 2, axis=(1, 2, 3)) + 1e-15
         # SIG
         Fs = self._cpe(F[:, :, 3:4], H, 0)
-        sig_eq = self._combine(Fs, H, noise, "sfbc" if self.n_tx == 2 else "mrc")[0][:, 0]
-        sig_bytes = np.packbits((sig_eq.real < 0).astype(np.uint8), axis=1)
+        sig_eq, sig_w = self._combine(Fs, H, noise, "sfbc" if self.n_tx == 2 else "mrc")
+        sig_eq = sig_eq[:, 0]
         mode_byte = MODE_CODES[self.mode] << 4 | MOD_CODES[self.modulation]
-        heads = [sig_bytes[k].tobytes() for k in range(K)]
-        valid = [d[0] == SIG_MAGIC and (d[1] & ~INTERLEAVE_MASK) == mode_byte and (d[1] >> 2 & 3) < 3
-                 and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0] for d in heads]
+        if self.acm:            # repeated 24-bit SIG, soft combined; any modulation, plain order
+            soft = sig_eq.real * np.broadcast_to(sig_w[:, 0], sig_eq.shape)
+            b = np.packbits(((soft[:, :24] + soft[:, 24:]) < 0).astype(np.uint8), axis=1)
+            heads = [bytes([SIG_MAGIC, b[k, 0], 0, b[k, 1]]) for k in range(K)]
+            valid = [crc8(bytes(b[k, :2])) == b[k, 2] and b[k, 0] & 0xF0 == ACM_FLAG | MODE_CODES[self.mode] << 4
+                     and b[k, 0] & INTERLEAVE_MASK == 0 for k in range(K)]
+        else:
+            sig_bytes = np.packbits((sig_eq.real < 0).astype(np.uint8), axis=1)
+            heads = [sig_bytes[k].tobytes() for k in range(K)]
+            valid = [d[0] == SIG_MAGIC and (d[1] & ~INTERLEAVE_MASK) == mode_byte and (d[1] >> 2 & 3) < 3
+                     and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0] for d in heads]
         # payload: equalise, de-interleave (per frame, as its SIG says), decide
         Fd = self._cpe(F[:, :, 4:], H, 1)
         scheme = {"siso": "mrc", "simo": "mrc", "alamouti": "sfbc", "smux": "mmse"}[self.mode]
@@ -411,8 +515,13 @@ class Demodulator:
         # impulse noise: null carriers of each data symbol vs the LTF noise floor
         burst = np.mean(np.abs(F[:, :, 4:][..., NULL_BINS]) ** 2, axis=(1, 3)) / noise[:, None]   # (K, np)
         derate = 1.0 / np.maximum(burst / 2.0, 1.0)
+        # effective post-equaliser SNR of each frame (harmonic mean over data carriers/streams):
+        # the quantity the ACM controller compares with its thresholds
+        snr_eff = -10 * np.log10(np.mean(1.0 / np.maximum(weight.reshape(K, -1), 1e-6), axis=1))
         weight = weight * derate.reshape((K, self.np) + (1,) * (weight.ndim - 2))
         weight = weight.reshape(K, -1)
+        if self.acm:
+            return self._acm_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise)
         for k in range(K):
             perm = self.perms[heads[k][1] >> 2 & 3] if valid[k] else None
             if perm is not None:
@@ -448,6 +557,54 @@ class Demodulator:
                 if self.n_tx == 2:
                     info["cond_db"] = self._cond(H[k])
             results.append((packet, info))
+        return results
+
+    def _acm_decode(self, eq, weight, heads, valid, cfo, snr_eff, H, noise):
+        """ACM frames: demap with the modulation of each SIG, decode every codeword.
+        Returns [(list of packets, info)] per frame."""
+        results = []
+        nbits = CODE_BYTES * 8
+        for k, d in enumerate(heads):
+            if not valid[k]:
+                results.append((None, {"reason": "sig", "cfo": cfo[k], "seq": None}))
+                continue
+            modulation = MOD_NAMES[d[1] & 3]
+            bps = BPS[modulation]
+            ncw = codewords_per_frame(self.mode, modulation)
+            nsym_used = -(-ncw * nbits // bps)
+            e, w = eq[k, :nsym_used], weight[k, :nsym_used]
+            bits = demodulate(e, bps)[:ncw * nbits]
+            raw = np.packbits(bits.reshape(ncw, nbits), axis=1)
+            rel_all = {}
+            def rel(j):
+                if "r" not in rel_all:
+                    rel_all["r"] = bit_reliability(e, w, bps)[:ncw * nbits].reshape(ncw, CODE_BYTES, 8).min(axis=2)
+                return rel_all["r"][j]
+            packets, reasons, corrected, erasures = [], [], 0, 0
+            for j in range(ncw):
+                r = (lambda j=j: rel(j)) if self.soft and self._soft_allowed() else None
+                t0 = time.perf_counter()
+                packet, c, reason, er = decode_codeword(raw[j], r)
+                if r is not None and (er or reason != "ok"):
+                    self.soft_budget -= time.perf_counter() - t0
+                reasons.append(reason)
+                corrected += c
+                erasures += er
+                if packet is not None:
+                    packets.append(packet)
+            info = {"reason": "ok" if packets else reasons[0], "reasons": reasons, "corrected": corrected,
+                    "soft_erasures": erasures, "cfo": cfo[k], "modulation": modulation,
+                    "snr_eff_db": float(snr_eff[k]), "interleaver": "none",
+                    "seq": struct.unpack(">H", d[2:4])[0]}
+            self.count = getattr(self, "count", 0) + 1
+            if self.const_every and packets and self.count % self.const_every == 0:
+                info["const"] = e[:self.n_const].astype(np.complex64)
+            if self.count % 8 == 1:
+                p = float(np.mean(np.sum(np.abs(H[k, :, :self.n_tx][..., DATA_BINS]) ** 2, axis=1)))
+                info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(e, bps))
+                if self.n_tx == 2:
+                    info["cond_db"] = self._cond(H[k])
+            results.append((packets, info))
         return results
 
     def _soft_allowed(self):
@@ -517,9 +674,10 @@ class Demodulator:
         sinr = G / np.maximum(1 - G, 1e-9)            # (K, 48, 2)
         return np.transpose(S, (0, 3, 1, 2)), sinr[:, None]   # (K, nsym, 48, 2)
 
-    def _evm(self, eq):
+    def _evm(self, eq, bps=None):
+        bps = bps or self.bps
         s = eq.reshape(-1)
-        ref = modulate(demodulate(s, self.bps), self.bps)
+        ref = modulate(demodulate(s, bps), bps)
         return float(10 * np.log10(np.mean(np.abs(s - ref) ** 2) + 1e-15))
 
     def _cond(self, H):

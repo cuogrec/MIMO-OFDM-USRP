@@ -21,7 +21,9 @@ Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`.
 
 ## Tính năng
 
-- 4 chế độ: `siso`, `simo` (MRC), `alamouti` (SFBC 2×2, mặc định), `smux` (2 luồng, MMSE); điều chế QPSK hoặc 16QAM.
+- 4 chế độ: `siso`, `simo` (MRC), `alamouti` (SFBC 2×2, mặc định), `smux` (2 luồng, MMSE); điều chế BPSK, QPSK, 16QAM, 64QAM.
+- **Điều chế thích ứng (ACM, v0.3):** máy phát chọn điều chế cho từng khung theo SNR máy thu báo về qua UDP ([ACM.md](OFDM_N321_RX/docs/ACM.md)).
+- Máy thu có cửa sổ `--gui`: chòm sao sau cân bằng và phổ 2 kênh.
 - Khung OFDM: FFT 64, CP 16, 48 sóng mang dữ liệu + 4 pilot. Mỗi khung có STF (dùng CSD), 2 LTF ma trận P và SIG có CRC16.
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
 - FEC: CRC32 + RS(248,216) trong, có **giải mềm** errors-and-erasures; interleaver `block` / `carrier`; RS8+8 ngoài,
@@ -44,6 +46,7 @@ Hướng dẫn chi tiết:
 - [Đấu nối 2×2](OFDM_N321_MIMO/docs/DAU_NOI_2x2.md)
 - [Chạy hai N321](OFDM_N321_TX/docs/HUONG_DAN_2_N321.md)
 - [Giải mềm và interleaving](OFDM_N321_TX/docs/GIAI_MEM_INTERLEAVING.md)
+- [Điều chế thích ứng (ACM)](OFDM_N321_RX/docs/ACM.md)
 
 ## Trạng thái
 
@@ -52,6 +55,7 @@ Hướng dẫn chi tiết:
 | Loopback RF trên một N321, anten 915 MHz, Alamouti (16/11/2026) | PASS: 3455/3455 gói, video trùng SHA-256, SNR 33–35 dB |
 | Mô phỏng hai N321 (CFO đến 5 kHz, SFO đến 10 ppm) | PASS ở siso, alamouti, smux |
 | Giải mềm + interleaving (v0.2), mô phỏng | SISO 18 dB: mất khung 38% → 25%; smux 20 dB: 40% → 29% |
+| ACM (v0.3), mô phỏng SNR 30→11→28 dB | Mất 1,3% gói (QPSK cố định 0%, 16QAM cố định 47%), dung lượng TB +71% so với QPSK |
 | RF giữa hai N321 | Chưa chạy |
 
 ## An toàn RF

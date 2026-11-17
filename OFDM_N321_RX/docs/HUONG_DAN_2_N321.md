@@ -175,6 +175,11 @@ Xử lý khi gặp vấn đề:
 Muốn tăng bitrate video, sửa `video_bitrate` / `ts_muxrate` trong `config/default.json` của folder **TX**.
 Nên giữ dưới khoảng 85% dung lượng của chế độ đang dùng: alamouti QPSK 362 kb/s, 16QAM hoặc smux 588 kb/s.
 
+### Điều chế thích ứng (v0.3)
+
+Thêm `--acm` ở **cả hai** bên. Khi đó máy phát tự chọn BPSK, QPSK, 16QAM hoặc 64QAM theo SNR máy thu báo về
+qua UDP 5003. Hai PC khác nhau thì thêm `--acm-host <IP PC phát>` bên RX. Chi tiết, mô phỏng và kết quả: [ACM.md](ACM.md).
+
 ## 8. Đã kiểm chứng
 
 - Mô phỏng hai tiến trình qua ZeroMQ trên GNU Radio 3.10.9, video thu trùng sha256 với video phát, không thiếu DATA:

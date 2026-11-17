@@ -13,6 +13,7 @@ bash scripts/start_tx.sh                                               # testpat
 bash scripts/start_tx.sh --source file --input ~/Videos/clip.mp4 --seconds 60
 bash scripts/start_tx.sh --source webcam --input /dev/video0
 bash scripts/start_tx.sh --mimo smux --freq 921e6                      # RX phải dùng cùng tham số
+bash scripts/start_tx.sh --acm                                         # điều chế thích ứng, RX cũng --acm (docs/ACM.md)
 
 bash scripts/sim_tx.sh                                    # mô phỏng qua ZeroMQ (RX chạy sim_rx.sh trước)
 ```

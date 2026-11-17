@@ -16,17 +16,26 @@ from . import __version__
 from .blocks import MimoChannelSim, MimoRxSink, MimoTxSource, VideoReceiver
 from .config import ROOT, TS_CHUNK_BYTES, load_settings
 from .media import encoder_command, require_ffmpeg, sha256_file
-from .modem import frame_samples
+from .modem import codewords_per_frame, frame_samples
 from .protocol import DATA, END, RS8_PARITY, pack_packet, rs_parity_stamp
 
 LOG = logging.getLogger("ofdm321")
 
 
 def capacity(s):
-    fl = frame_samples(s.mimo_mode, s.modulation, s.frame_gap_samples)
+    acm = bool(getattr(s, "acm", False))
+    fl = frame_samples(s.mimo_mode, s.modulation, s.frame_gap_samples, acm)
     fps = s.sample_rate / fl
-    return {"frame_samples": fl, "frames_per_s": fps,
-            "ts_capacity_bps_after_rs8_8": fps * TS_CHUNK_BYTES * 8 * 8 / 16}
+    per_packet = TS_CHUNK_BYTES * 8 * 8 / 16                 # TS bits per packet after RS8+8
+    out = {"frame_samples": fl, "frames_per_s": fps}
+    if acm:
+        from .acm import parse_modcods
+        out["acm_ts_capacity_bps"] = {m: fps * codewords_per_frame(s.mimo_mode, m) * per_packet
+                                      for m in parse_modcods(s.acm_modcods)}
+        out["ts_capacity_bps_after_rs8_8"] = min(out["acm_ts_capacity_bps"].values())
+    else:
+        out["ts_capacity_bps_after_rs8_8"] = fps * per_packet
+    return out
 
 
 class Encoder(threading.Thread):
