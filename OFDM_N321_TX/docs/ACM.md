@@ -89,6 +89,11 @@ bash scripts/start_tx.sh --acm --tx-gain 25 --tx-gain-profile steps:25,15,5,15,2
 
   Đổi bitrate video theo ACM là bước nâng cấp tiếp theo.
 
+### Không có mạng chung giữa hai PC?
+
+Từ v0.4, phản hồi có thể đi luôn qua sóng radio, bằng kênh B của hai N321. Cách này cần chạy `--mimo siso`.
+Xem [PHAN_HOI_RADIO.md](PHAN_HOI_RADIO.md).
+
 ## 4. Kết quả mô phỏng (alamouti, Rayleigh, CFO 2 kHz, SFO 5 ppm, SNR 30/22/14/11/20/28 dB)
 
 | Cấu hình | Gói DATA mất (trước RS8+8 bù) | Dung lượng trung bình |

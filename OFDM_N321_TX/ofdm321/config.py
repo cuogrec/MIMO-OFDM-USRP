@@ -35,6 +35,13 @@ class Settings:
     acm_host: str = "127.0.0.1"      # RX: IP of the TX PC (feedback destination)
     acm_port: int = 5003             # UDP port of the feedback channel
     acm_fb_delay_s: float = 0.0      # RX: extra feedback delay (0.5 ~ GEO satellite round trip)
+    fb_link: str = "udp"             # ACM feedback path: udp (network) | radio (N321 channel B, SISO only)
+    fb_freq: float = 922.7e6         # radio feedback carrier (RX machine TX/RX B -> TX machine RX2 B)
+    fb_rate: float = 500e3           # radio feedback sample rate (MCR / even integer); CFO range +-fb_rate/64
+    fb_tx_gain: float = 20.0         # RX machine, TX/RX B (antenna: <= 30)
+    fb_rx_gain: float = 40.0         # TX machine, RX2 B
+    fb_zmq_addr: str = "tcp://127.0.0.1:5561"   # simulation: feedback link (RX PUSH -> TX PULL)
+    sim_fb_snr_db: float = 20.0      # simulation: SNR of the feedback link
     # --- N321 ------------------------------------------------------------
     device_args: str = "addr=192.168.20.2,master_clock_rate=200e6"
     subdev: str = "A:0 B:0"
@@ -113,6 +120,22 @@ class Settings:
             raise ValueError("clock/time source must be internal, external or gpsdo")
         if self.subdev.split() != ["A:0", "B:0"]:
             raise ValueError("N321 two-channel subdev must be 'A:0 B:0'")
+        if self.fb_link not in ("udp", "radio"):
+            raise ValueError("fb_link must be udp or radio")
+        if self.fb_link == "radio":
+            if not self.acm:
+                raise ValueError("fb_link radio is the ACM feedback path: add --acm")
+            if self.mimo_mode != "siso":
+                raise ValueError("fb_link radio uses channel B of both N321: only --mimo siso")
+            d = mcr / self.fb_rate
+            if abs(d - round(d)) > 1e-9 or round(d) % 2 or not 2 <= round(d) <= 1024:
+                raise ValueError(f"fb_rate must be MCR/N with an even N in 2..1024 (MCR={mcr:g})")
+            if not 3e6 <= self.fb_freq <= 6e9:
+                raise ValueError("fb_freq out of the N321 range")
+            if abs(self.fb_freq - self.frequency) < 0.5 * (self.sample_rate + self.fb_rate):
+                raise ValueError("fb_freq overlaps the video channel: keep them >= 1 MHz apart")
+            if not 0 <= self.fb_tx_gain <= 60 or not 0 <= self.fb_rx_gain <= 60:
+                raise ValueError("feedback gains are 0..60 dB")
         if self.acm:
             from .acm import parse_modcods
             parse_modcods(self.acm_modcods)

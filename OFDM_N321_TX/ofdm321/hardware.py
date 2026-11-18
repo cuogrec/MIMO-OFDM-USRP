@@ -135,3 +135,66 @@ def configure_direction(dev, settings, kind):
     dev.set_time_now(uhd.time_spec(0.0), uhd.ALL_MBOARDS)
     dev.set_start_time(uhd.time_spec(s.start_delay_s))
     return report
+
+
+# ---------------------------------------------------------------- per-channel streams (radio feedback)
+def validate_tx_gain(gain, rf_link, attenuation_db, what="feedback"):
+    """Same RF rules as validate_rf, for an extra transmitter (the RX machine's feedback)."""
+    if rf_link == "cable":
+        if attenuation_db is None or attenuation_db < 30 or gain > attenuation_db - 10:
+            raise ValueError(f"{what}: cable needs --attenuation-db >= 30 and gain <= attenuation-10")
+    elif gain > 30:
+        raise ValueError(f"{what}: antenna link starts with gain <= 30 dB")
+
+
+def make_stream(settings, kind, channels):
+    """One streamer on the listed device channels (0 = A, 1 = B of subdev 'A:0 B:0')."""
+    from gnuradio import uhd
+    args = uhd.stream_args(cpu_format="fc32", otw_format="sc16", channels=list(channels))
+    if kind == "rx":
+        return uhd.usrp_source(settings.device_args, args)
+    return uhd.usrp_sink(settings.device_args, args, "")
+
+
+def configure_streams(streams, settings):
+    """streams: list of dicts {dev, kind, n, freq, gain, antenna, rate, name}; all on ONE N321.
+    Each direction may use its own rate and frequency (Rhodium has separate TX and RX LOs).
+    Ends with one common time base and a timed start of every streamer."""
+    from gnuradio import uhd
+    s = settings
+    report = {}
+    for st in streams:
+        dev = st["dev"]
+        dev.set_clock_source(s.clock_source, 0)
+        dev.set_time_source(s.time_source, 0)
+        dev.set_subdev_spec(s.subdev, 0)
+        dev.set_samp_rate(st["rate"])
+        rate = dev.get_samp_rate()
+        if not math.isclose(rate, st["rate"], rel_tol=1e-9):
+            raise ValueError(f"{st['name']}: UHD coerced rate {st['rate']} -> {rate}")
+        chans = []
+        for ch in range(st["n"]):
+            dev.set_center_freq(uhd.tune_request(st["freq"]), ch)
+            dev.set_gain(st["gain"], ch)
+            dev.set_antenna(st["antenna"], ch)
+            if abs(dev.get_center_freq(ch) - st["freq"]) > 1e3:
+                raise ValueError(f"{st['name']} could not tune to {st['freq']}")
+            if "lo_locked" in dev.get_sensor_names(ch):
+                deadline = time.monotonic() + 3
+                while not dev.get_sensor("lo_locked", ch).to_bool():
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(f"{st['name']} LO not locked")
+                    time.sleep(0.05)
+            chans.append({"freq": dev.get_center_freq(ch), "gain": dev.get_gain(ch),
+                          "antenna": dev.get_antenna(ch)})
+        report[st["name"]] = {"role": st["kind"], "rate": rate, "channels": chans,
+                              "info": dict(dev.get_usrp_info(0))}
+    first = streams[0]["dev"]
+    report["master_clock_rate"] = first.get_clock_rate(0)
+    report["clock_source"], report["time_source"] = s.clock_source, s.time_source
+    if s.time_source == "gpsdo":
+        report["gps_locked"] = bool(first.get_mboard_sensor("gps_locked", 0).to_bool())
+    first.set_time_now(uhd.time_spec(0.0), uhd.ALL_MBOARDS)
+    for st in streams:
+        st["dev"].set_start_time(uhd.time_spec(s.start_delay_s))
+    return report

@@ -36,6 +36,10 @@ def common_args(p):
     p.add_argument("--acm", action="store_const", const=True,
                    help="adaptive modulation: TX picks BPSK..64QAM per frame from RX feedback (both sides)")
     p.add_argument("--acm-port", dest="acm_port", type=int, help="UDP port of the feedback channel (5003)")
+    p.add_argument("--fb-link", dest="fb_link", choices=("udp", "radio"),
+                   help="ACM feedback path: udp (network, default) or radio (channel B of both N321, --mimo siso)")
+    p.add_argument("--fb-freq", dest="fb_freq", type=float, help="radio feedback carrier (default 922.7e6)")
+    p.add_argument("--fb-rate", dest="fb_rate", type=float, help="radio feedback sample rate (default 500e3)")
     p.add_argument("--rate", dest="sample_rate", type=float)
     p.add_argument("--freq", dest="frequency", type=float)
     p.add_argument("--args", dest="device_args")
@@ -47,7 +51,7 @@ def common_args(p):
 
 def settings_from(a, extra):
     keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr",
-            "acm", "acm_port"] + extra
+            "acm", "acm_port", "fb_link", "fb_freq", "fb_rate"] + extra
     over = {k: getattr(a, k) for k in keys}
     if a.sync:
         over.update(clock_source=a.sync, time_source=a.sync)
@@ -91,9 +95,10 @@ def main_tx(argv=None):
     p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
+    p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RX2 B gain (40)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db"])
+    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain"])
     require_ffmpeg()
     run_dir = new_run("tx", s, a.mode, a.name)
     session = secrets.randbits(32)
@@ -107,7 +112,8 @@ def main_tx(argv=None):
     if s.acm:
         LOG.info("ACM TS capacity per modulation (kb/s): %s | video TS mux %d kb/s",
                  {m: round(v / 1e3) for m, v in cap["acm_ts_capacity_bps"].items()}, s.ts_muxrate // 1000)
-    ctl = fb = None
+    ctl = fb = fbh = fbrx = None
+    radio_fb = s.acm and s.fb_link == "radio"
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     try:
@@ -115,19 +121,47 @@ def main_tx(argv=None):
         if s.acm:
             from .acm import AcmController, FeedbackReceiver
             ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db)
-            fb = FeedbackReceiver(ctl, s.acm_port, session)
-            fb.start()
-            LOG.info("ACM: waiting for RX feedback on UDP %d (starts with %s)", s.acm_port, ctl.modulation)
+            if radio_fb:
+                from .acm import RadioFeedbackHandler
+                from .blocks import feedback_rx_settings
+                fbh = RadioFeedbackHandler(ctl, session)
+                fbrx = MimoRxSink(feedback_rx_settings(s))
+                fbrx.on_packet = fbh
+                LOG.info("ACM: radio feedback on %.4g MHz (RX2 B), %.3g S/s (starts with %s)",
+                         s.fb_freq / 1e6, s.fb_rate, ctl.modulation)
+            else:
+                fb = FeedbackReceiver(ctl, s.acm_port, session)
+                fb.start()
+                LOG.info("ACM: waiting for RX feedback on UDP %d (starts with %s)", s.acm_port, ctl.modulation)
         src = MimoTxSource(s, session, throttle=(a.mode == "sim"), acm=ctl)
         keep = [src]
+        tx_chans = 2
         if a.mode == "rf":
-            from .hardware import configure_direction, make_radio, validate_rf
+            from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
+                                   validate_rf)
             report["notes"] = validate_rf(s, a.rf_link, a.attenuation_db)
-            usrp = make_radio(s, "tx")
-            report["hardware"] = configure_direction(usrp, s, "tx")
-            tb.connect((src, 0), (usrp, 0))
-            tb.connect((src, 1), (usrp, 1))
-            keep.append(usrp)
+            if radio_fb:
+                # channel A transmits the video, channel B (RX2) receives the feedback
+                tx_chans = 1
+                usrp = make_stream(s, "tx", [0])
+                fusrp = make_stream(s, "rx", [1])
+                report["hardware"] = configure_streams([
+                    {"dev": usrp, "kind": "tx", "n": 1, "freq": s.frequency, "gain": s.tx_gain,
+                     "antenna": s.tx_antenna, "rate": s.sample_rate, "name": "video_tx_A"},
+                    {"dev": fusrp, "kind": "rx", "n": 1, "freq": s.fb_freq, "gain": s.fb_rx_gain,
+                     "antenna": "RX2", "rate": s.fb_rate, "name": "feedback_rx_B"}], s)
+                nul_tx, nul_rx = blocks.null_sink(gr.sizeof_gr_complex), blocks.null_source(gr.sizeof_gr_complex)
+                tb.connect((src, 0), (usrp, 0))
+                tb.connect((src, 1), nul_tx)
+                tb.connect((fusrp, 0), (fbrx, 0))
+                tb.connect(nul_rx, (fbrx, 1))
+                keep += [usrp, fusrp, fbrx, nul_tx, nul_rx]
+            else:
+                usrp = make_radio(s, "tx")
+                report["hardware"] = configure_direction(usrp, s, "tx")
+                tb.connect((src, 0), (usrp, 0))
+                tb.connect((src, 1), (usrp, 1))
+                keep.append(usrp)
         else:
             from gnuradio import zeromq
             il = blocks.interleave(gr.sizeof_gr_complex, 1)
@@ -137,6 +171,21 @@ def main_tx(argv=None):
             tb.connect(il, sink)
             keep += [il, sink]
             report["hardware"] = {"zmq": s.zmq_addr}
+            if radio_fb:
+                # simulated feedback link: RX process PUSH -> here, AWGN + CFO like a real carrier
+                from dataclasses import replace
+                from .blocks import feedback_rx_settings
+                fs = replace(feedback_rx_settings(s), sim_channel="identity", sim_snr_db=s.sim_fb_snr_db,
+                             sim_cfo_hz=1500.0, sim_snr_profile="")
+                fsrc = zeromq.pull_source(gr.sizeof_gr_complex, 1, s.fb_zmq_addr, 100, False, -1)
+                fnul = blocks.null_source(gr.sizeof_gr_complex)
+                fch = MimoChannelSim(fs)
+                tb.connect(fsrc, (fch, 0))
+                tb.connect(fnul, (fch, 1))
+                tb.connect((fch, 0), (fbrx, 0))
+                tb.connect((fch, 1), (fbrx, 1))
+                keep += [fsrc, fnul, fch, fbrx]
+                report["hardware"]["feedback_zmq"] = s.fb_zmq_addr
         gain_profile = None
         if a.tx_gain_profile:
             from .blocks import parse_snr_profile
@@ -159,7 +208,7 @@ def main_tx(argv=None):
             time.sleep(1)
             if gain_profile is not None and a.mode == "rf":
                 g = gain_profile(time.monotonic() - t_start)
-                for ch in (0, 1):
+                for ch in range(tx_chans):
                     usrp.set_gain(g, ch)
                 LOG.info("TX gain %.1f dB (profile)", g)
             t = src.snapshot()
@@ -168,6 +217,11 @@ def main_tx(argv=None):
                          t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"], t["acm_modulation"],
                          None if t["acm_snr_db"] is None else round(t["acm_snr_db"], 1), t["acm_switches"],
                          round(ctl.latency[-1], 2) if ctl.latency else None)
+                if fbh is not None:
+                    fr = fbrx.snapshot()
+                    LOG.info("   radio feedback: %d frames (%d used), link SNR %s dB, lost %d",
+                             fbh.frames, fbh.used, None if fr["snr_db"] is None else round(fr["snr_db"], 1),
+                             fr["lost_sync"])
             else:
                 LOG.info("TX data %d | queue %d | frames %d", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"])
         while not stop.is_set() and src.snapshot()["tx_queue"] > 0:
@@ -177,11 +231,15 @@ def main_tx(argv=None):
         tb.wait()
         ts = run_dir / "video_tx.ts"
         if ctl is not None:
-            fb.close()
+            if fb is not None:
+                fb.close()
             lat = sorted(ctl.latency)
             report["acm"] = {"switches": ctl.switches, "reports": ctl.reports, "frames": src.snapshot()["acm_frames"],
                              "loop_latency_s_median": lat[len(lat) // 2] if lat else None,
-                             "history": list(ctl.history)}
+                             "history": list(ctl.history), "fb_link": s.fb_link}
+            if fbh is not None:
+                report["acm"]["radio_feedback"] = {"frames": fbh.frames, "used": fbh.used, "foreign": fbh.foreign,
+                                                   "rx": fbrx.snapshot()}
         report.update(tx=src.snapshot(), encoder_error=enc.error, video_tx_bytes=ts.stat().st_size,
                       video_tx_sha256=sha256_file(ts), video_tx_frames=ffprobe_frames(ts))
         if not enc.error and ts.stat().st_size > 0 and not stop.is_set():
@@ -221,10 +279,16 @@ def main_rx(argv=None):
     p.add_argument("--acm-host", dest="acm_host", help="ACM: IP of the TX PC (default 127.0.0.1)")
     p.add_argument("--fb-delay", dest="acm_fb_delay_s", type=float,
                    help="ACM: extra feedback delay in s (0.25-0.5 emulates a GEO satellite)")
+    p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: TX/RX B gain (20)")
+    p.add_argument("--fb-snr", dest="sim_fb_snr_db", type=float, help="SIM: SNR of the feedback link (20)")
+    p.add_argument("--rf-link", choices=("antenna", "cable"), default="antenna",
+                   help="radio feedback transmitter: antenna (gain <= 30) or cable (+ --attenuation-db)")
+    p.add_argument("--attenuation-db", type=float)
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
-                                "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s"])
+                                "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s",
+                                "fb_tx_gain", "sim_fb_snr_db"])
     run_dir = new_run("rx", s, a.mode, a.name)
     report = {"version": __version__, "role": "rx", "mode": a.mode, "settings": s.to_dict(),
               "capacity": capacity(s), "started": datetime.now().isoformat(), "status": "FAIL"}
@@ -233,6 +297,8 @@ def main_rx(argv=None):
     player = None
     gui = app = None
     ch_sim = None
+    fbsrc = None
+    radio_fb = s.acm and s.fb_link == "radio"
     try:
         if a.gui:
             from .rxgui import RxGui, ensure_app
@@ -241,14 +307,38 @@ def main_rx(argv=None):
         rx = MimoRxSink(s)
         vr = VideoReceiver(a.session, run_dir / "video_rx.ts", s.udp_port)
         keep = [rx, vr]
+        if radio_fb:
+            from .acm import FeedbackReporter
+            from .blocks import FeedbackRadioSource
+            reporter = FeedbackReporter(rx, vr, s.acm_fb_delay_s)
+            fbsrc = FeedbackRadioSource(s, reporter.packet, throttle=(a.mode == "sim"))
+            keep.append(fbsrc)
         if a.mode == "rf":
-            from .hardware import configure_direction, make_radio
-            usrp = make_radio(s, "rx")
-            report["hardware"] = configure_direction(usrp, s, "rx")
-            tb.connect((usrp, 0), (rx, 0))
-            tb.connect((usrp, 1), (rx, 1))
-            keep.append(usrp)
-            iq = [(usrp, 0), (usrp, 1)]
+            from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
+                                   validate_tx_gain)
+            if radio_fb:
+                # channel A (RX2) receives the video, channel B (TX/RX) transmits the feedback
+                validate_tx_gain(s.fb_tx_gain, a.rf_link, a.attenuation_db)
+                usrp = make_stream(s, "rx", [0])
+                fusrp = make_stream(s, "tx", [1])
+                report["hardware"] = configure_streams([
+                    {"dev": usrp, "kind": "rx", "n": 1, "freq": s.frequency, "gain": s.rx_gain,
+                     "antenna": s.rx_antenna, "rate": s.sample_rate, "name": "video_rx_A"},
+                    {"dev": fusrp, "kind": "tx", "n": 1, "freq": s.fb_freq, "gain": s.fb_tx_gain,
+                     "antenna": "TX/RX", "rate": s.fb_rate, "name": "feedback_tx_B"}], s)
+                nul = blocks.null_source(gr.sizeof_gr_complex)
+                tb.connect((usrp, 0), (rx, 0))
+                tb.connect(nul, (rx, 1))
+                tb.connect(fbsrc, (fusrp, 0))
+                keep += [usrp, fusrp, nul]
+                iq = [(usrp, 0), (nul, 0)]
+            else:
+                usrp = make_radio(s, "rx")
+                report["hardware"] = configure_direction(usrp, s, "rx")
+                tb.connect((usrp, 0), (rx, 0))
+                tb.connect((usrp, 1), (rx, 1))
+                keep.append(usrp)
+                iq = [(usrp, 0), (usrp, 1)]
         else:
             from gnuradio import zeromq
             srcz = zeromq.pull_source(gr.sizeof_gr_complex, 1, s.zmq_addr, 100, False, -1)
@@ -266,6 +356,11 @@ def main_rx(argv=None):
             iq = [(ch, 0), (ch, 1)]
             report["hardware"] = {"zmq": s.zmq_addr, "sfo_ppm": s.sim_sfo_ppm, "cfo_hz": s.sim_cfo_hz,
                                   "snr_db": s.sim_snr_db, "channel": s.sim_channel}
+            if radio_fb:
+                fpush = zeromq.push_sink(gr.sizeof_gr_complex, 1, s.fb_zmq_addr, 100, False, -1)
+                tb.connect(fbsrc, fpush)
+                keep.append(fpush)
+                report["hardware"]["feedback_zmq"] = s.fb_zmq_addr
         tb.msg_connect((rx, "pdus"), (vr, "pdus"))
         if a.gui:
             gui = RxGui(tb, rx, iq, s)
@@ -273,7 +368,10 @@ def main_rx(argv=None):
         tb._keep = keep
         tb.start()
         fbs = None
-        if s.acm:
+        if radio_fb:
+            LOG.info("ACM: radio feedback on %.4g MHz (TX/RX B, gain %.0f dB), %.3g S/s",
+                     s.fb_freq / 1e6, s.fb_tx_gain, s.fb_rate)
+        elif s.acm:
             from .acm import FeedbackSender
             fbs = FeedbackSender(rx, vr, s.acm_host, s.acm_port, delay_s=s.acm_fb_delay_s)
             fbs.start()
@@ -304,6 +402,8 @@ def main_rx(argv=None):
             if s.acm:
                 line += " | ACM %s SNR_eff %s dB" % (r["modulation"], None if r["snr_eff_db"] is None
                                                       else round(r["snr_eff_db"], 1))
+                if fbsrc is not None:
+                    line += " | fb %d frames" % fbsrc.frames
                 if a.mode == "sim" and ch_sim is not None and ch_sim.profile is not None:
                     line += " (sim SNR %.1f)" % ch_sim.snr_now
             LOG.info("%s", line)

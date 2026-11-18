@@ -23,6 +23,7 @@ Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`.
 
 - 4 chế độ: `siso`, `simo` (MRC), `alamouti` (SFBC 2×2, mặc định), `smux` (2 luồng, MMSE); điều chế BPSK, QPSK, 16QAM, 64QAM.
 - **Điều chế thích ứng (ACM, v0.3):** máy phát chọn điều chế cho từng khung theo SNR máy thu báo về qua UDP ([ACM.md](OFDM_N321_RX/docs/ACM.md)).
+- **Phản hồi qua sóng radio (v0.4):** chạy SISO trên kênh A, bên thu gửi SNR về bên phát trên kênh B của hai N321.
 - Máy thu có cửa sổ `--gui`: chòm sao sau cân bằng và phổ 2 kênh.
 - Khung OFDM: FFT 64, CP 16, 48 sóng mang dữ liệu + 4 pilot. Mỗi khung có STF (dùng CSD), 2 LTF ma trận P và SIG có CRC16.
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
@@ -47,6 +48,7 @@ Hướng dẫn chi tiết:
 - [Chạy hai N321](OFDM_N321_TX/docs/HUONG_DAN_2_N321.md)
 - [Giải mềm và interleaving](OFDM_N321_TX/docs/GIAI_MEM_INTERLEAVING.md)
 - [Điều chế thích ứng (ACM)](OFDM_N321_RX/docs/ACM.md)
+- [Phản hồi ACM qua sóng radio, không cần mạng giữa hai PC](OFDM_N321_RX/docs/PHAN_HOI_RADIO.md)
 - [PC chỉ có một cổng mạng: N321 #1 tự phát file IQ](OFDM_N321_TX/docs/MOT_CONG_MANG.md)
 
 ## Trạng thái

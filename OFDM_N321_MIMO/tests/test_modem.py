@@ -177,6 +177,21 @@ def test_acm_controller():
     assert c.modulation == "bpsk"
 
 
+def test_radio_feedback_packet():
+    """ACM report -> SISO BPSK frame (radio feedback link) -> parsed back, with CFO and noise."""
+    from ofdm321.acm import FB, FB_MAGIC, FB_PACKET_BYTES, parse_feedback_packet
+    rng = np.random.default_rng(21)
+    raw = FB.pack(FB_MAGIC, 4242, 9, 17.25, 0.04, 0.03, 1, 1)
+    raw += bytes(FB_PACKET_BYTES - len(raw))
+    tx, rx = Modulator("siso", "bpsk", interleaver="none"), Demodulator("siso", "bpsk")
+    y = channel(tx.frame(raw), np.array([[0.8 * np.exp(1j), 0], [0, 0]]), 12, rng, cfo=2e-3)
+    s0, p = rx.find(y)
+    (out, info), = rx.demodulate_batch(y, [s0], [p])
+    msg = parse_feedback_packet(out)
+    assert msg["session"] == 4242 and msg["seq"] == 9 and msg["mod"] == "qpsk" and msg["valid"], msg
+    assert abs(msg["snr"] - 17.25) < 1e-4
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

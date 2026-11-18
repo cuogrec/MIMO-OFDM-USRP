@@ -147,6 +147,8 @@ class MimoRxSink(gr.sync_block):
         self.modulation = None if self.acm else s.modulation
         self.mod_frames = {}
         self.cw_ok = self.cw_bad = 0
+        self.last_frame_t = None               # monotonic time of the last decoded ACM frame
+        self.on_packet = None                  # optional callable(packet bytes), e.g. radio feedback
         self.frame_len = (4 + self.demod.np) * SYM + s.frame_gap_samples
         self.body = self.demod.body_len
         self.cap = 1 << 18
@@ -249,6 +251,7 @@ class MimoRxSink(gr.sync_block):
                     self.mod_frames[m] = self.mod_frames.get(m, 0) + 1
                     x = info["snr_eff_db"]
                     self.snr_eff = x if self.snr_eff is None else 0.8 * self.snr_eff + 0.2 * x
+                    self.last_frame_t = time.monotonic()
                 else:
                     self.stats[{"ok": "ok", "sig": "sig_fail", "rs": "rs_fail", "crc": "crc_fail"}[reason]] += 1
                 self.stats["corrected_bytes"] += info.get("corrected", 0)
@@ -267,6 +270,8 @@ class MimoRxSink(gr.sync_block):
                 self.message_port_pub(self.const_port, pmt.cons(
                     pmt.PMT_NIL, pmt.init_c32vector(len(c), c.tolist())))
             for pk in (packet if isinstance(packet, list) else [packet] if packet is not None else []):
+                if self.on_packet is not None:
+                    self.on_packet(pk)
                 self.message_port_pub(self.port, pmt.cons(
                     pmt.PMT_NIL, pmt.init_u8vector(len(pk), list(pk))))
         nxt = starts[-1] + self.frame_len
@@ -284,8 +289,57 @@ class MimoRxSink(gr.sync_block):
 
     def acm_state(self):
         with self.lock:
+            age = None if self.last_frame_t is None else time.monotonic() - self.last_frame_t
             return {"snr_eff_db": self.snr_eff, "cw_ok": self.cw_ok, "cw_bad": self.cw_bad,
-                    "modulation": self.modulation}
+                    "modulation": self.modulation, "age_s": age}
+
+
+class FeedbackRadioSource(gr.sync_block):
+    """RX machine, radio feedback (--fb-link radio): continuous SISO BPSK OFDM frames on
+    N321 #2 channel B (TX/RX B), each carrying the latest ACM report (acm.FeedbackReporter).
+    About 133 frames/s at 500 kS/s: the TX sees a fresh report every ~7.5 ms."""
+
+    def __init__(self, settings, provider, throttle=False):
+        gr.sync_block.__init__(self, "ACM radio feedback source", [], [np.complex64])
+        from dataclasses import replace
+        fs = replace(settings, mimo_mode="siso", modulation="bpsk", acm=False)
+        self.mod = Modulator("siso", "bpsk", fs.frame_gap_samples, fs.tx_rms, "none")
+        self.provider = provider              # callable -> 212-byte packet
+        self.pending = np.zeros(0, np.complex64)
+        self.pos = 0
+        self.throttle, self.rate = throttle, settings.fb_rate
+        self.t0, self.produced = None, 0
+        self.frames = 0
+        self.set_output_multiple(SYM)
+
+    def work(self, input_items, output_items):
+        out = output_items[0]
+        n = len(out)
+        if self.throttle:
+            if self.t0 is None:
+                self.t0 = time.monotonic()
+            ahead = self.produced / self.rate - (time.monotonic() - self.t0)
+            if ahead > 0.02:
+                time.sleep(min(ahead - 0.01, 0.05))
+        written = 0
+        while written < n:
+            if self.pos >= self.pending.size:
+                self.pending = self.mod.frame(self.provider())[0]
+                self.pos = 0
+                self.frames += 1
+            take = min(n - written, self.pending.size - self.pos)
+            out[written:written + take] = self.pending[self.pos:self.pos + take]
+            written += take
+            self.pos += take
+        self.produced += n
+        return n
+
+
+def feedback_rx_settings(settings):
+    """Settings of the feedback receiver on the TX machine (SISO BPSK at fb_rate)."""
+    from dataclasses import replace
+    return replace(settings, mimo_mode="siso", modulation="bpsk", acm=False, const_every=0,
+                   sample_rate=settings.fb_rate)
 
 
 class MimoChannelSim(gr.sync_block):
