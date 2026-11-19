@@ -103,6 +103,12 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   at 1 MS/s); resend on ACM downshift + RX reorder buffer; UDP feedback 0.02 s. Sim steps:30,22,14,22,30:8 at
   1 MS/s: alamouti+UDP and siso+radio both SIM_RX_VERIFIED, 0 missing, 4 bitrate switches; mean TS 525 kb/s vs
   260 fixed. History per second in both reports + tools/plot_run.py; radio feedback watchdog; RF0/RF1 names.
+- Done on 2026-11-19 (commits 34e3560..ae8e882, all pushed): CLAUDE.md added; fb gain defaults 30/60 and docs
+  "channel A = RF0, B = RF1"; v0.5 in 5 commits (adaptive video, history + plot, watchdog, port names, docs);
+  tests 11 -> 18, all PASS; ofdm321/tests/tools identical in the 3 folders.
+- Project report (Claude Doc) updated to v0.5 the same day (v0.4 + v0.5 sections, RF 19/11 row, plot_run.png
+  of the alamouti+UDP sim). The 19/11 RF row lacks frame count, cond, rx_rms and RX gain: fill them from that
+  run's report.json when available.
 
 ## Next steps (agreed direction)
 
