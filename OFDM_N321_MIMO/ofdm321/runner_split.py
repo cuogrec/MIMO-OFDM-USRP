@@ -216,6 +216,10 @@ def main_tx(argv=None):
         report["clock"] = {"monotonic": t_start, "time": time.time()}   # maps acm.history times to wall clock
         history = report["history"] = []
         fb_prev = [0]
+        watchdog = None
+        if fbh is not None:
+            from .acm import FeedbackWatchdog
+            watchdog = FeedbackWatchdog()
 
         def make_encoder():
             if ladder:
@@ -256,6 +260,12 @@ def main_tx(argv=None):
                 row.update(fb_frames=fbh.frames, fb_frames_per_s=fbh.frames - fb_prev[0], fb_used=fbh.used,
                            fb_snr_db=fr["snr_db"], fb_lost_sync=fr["lost_sync"])
                 fb_prev[0] = fbh.frames
+                state = watchdog.check(now - t_start, fbh.frames)
+                if state == "warn":
+                    LOG.warning("%s (%.0f s, 0 khung phản hồi)", watchdog.MESSAGE, now - t_start)
+                elif state == "ok":
+                    LOG.info("Đã nhận phản hồi radio sau %.1f s (link SNR %s dB)", watchdog.first_frame_s,
+                             None if fr["snr_db"] is None else round(fr["snr_db"], 1))
             history.append(row)
 
         LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
@@ -293,8 +303,12 @@ def main_tx(argv=None):
                              "loop_latency_s_median": lat[len(lat) // 2] if lat else None,
                              "history": list(ctl.history), "fb_link": s.fb_link}
             if fbh is not None:
-                report["acm"]["radio_feedback"] = {"frames": fbh.frames, "used": fbh.used, "foreign": fbh.foreign,
-                                                   "rx": fbrx.snapshot()}
+                fsnr = [r["fb_snr_db"] for r in history if r.get("fb_snr_db") is not None]
+                report["acm"]["radio_feedback"] = {
+                    "frames": fbh.frames, "used": fbh.used, "foreign": fbh.foreign, "rx": fbrx.snapshot(),
+                    "first_frame_s": watchdog.first_frame_s, "no_feedback_warnings": watchdog.warnings,
+                    "link_snr_db": {"min": min(fsnr), "median": sorted(fsnr)[len(fsnr) // 2], "max": max(fsnr)}
+                    if fsnr else None}
         if ladder:
             report["video"] = {"adaptive": True, "fill": s.adaptive_video_fill, "hold_s": s.adaptive_video_hold_s,
                                "ladder": [{"modulation": m, "ts_muxrate": mux, "video_bitrate": vb}

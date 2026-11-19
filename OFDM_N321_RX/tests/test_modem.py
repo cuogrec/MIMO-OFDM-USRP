@@ -258,6 +258,17 @@ def test_rx_reorder_buffer():
     assert results[0.05] == (0, b"".join(pay))                    # in order again: complete video
 
 
+def test_feedback_watchdog():
+    from ofdm321.acm import FeedbackWatchdog
+    w = FeedbackWatchdog(first_s=5, every_s=10)
+    seen = [(t, w.check(t, 0)) for t in range(1, 27)]
+    assert [t for t, s in seen if s == "warn"] == [5, 15, 25] and w.warnings == 3
+    assert w.check(27, 3) == "ok" and w.first_frame_s == 27
+    assert w.check(40, 3) is None and w.check(50, 3) is None     # quiet once feedback arrived
+    w2 = FeedbackWatchdog()
+    assert w2.check(1, 12) == "ok" and w2.warnings == 0
+
+
 def _ts(pid, cc, payload=True, keyframe=False):
     """Synthetic 188-byte TS packet (PUSI + random access indicator for a keyframe)."""
     afc = (1 if payload else 0) | (2 if keyframe or not payload else 0)

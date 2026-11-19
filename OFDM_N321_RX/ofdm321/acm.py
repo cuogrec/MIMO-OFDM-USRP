@@ -217,6 +217,31 @@ class RadioFeedbackHandler:
             self.ctl.update(msg["snr"], msg["cer"], msg["mod"])
 
 
+class FeedbackWatchdog:
+    """TX, radio feedback: warn when no feedback frame has arrived `first_s` after start,
+    then every `every_s` until the first frame. check() -> "warn", "ok" (first frame, once) or None."""
+
+    MESSAGE = ("Chưa nhận phản hồi: kiểm tra anten RF1 RX2 (máy phát) và RF1 TX/RX (máy thu), "
+               "tăng --fb-rx-gain/--fb-tx-gain")
+
+    def __init__(self, first_s=5.0, every_s=10.0):
+        self.next, self.every = first_s, every_s
+        self.warnings = 0
+        self.first_frame_s = None
+
+    def check(self, elapsed_s, frames):
+        if self.first_frame_s is not None:
+            return None
+        if frames > 0:
+            self.first_frame_s = round(elapsed_s, 2)
+            return "ok"
+        if elapsed_s >= self.next:
+            self.warnings += 1
+            self.next += self.every
+            return "warn"
+        return None
+
+
 class FeedbackSender(threading.Thread):
     """RX side: every `period` s sends the filtered SNR_eff and codeword error rate.
     delay_s emulates the return path latency (e.g. 0.5 s for a GEO satellite)."""
