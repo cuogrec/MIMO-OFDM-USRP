@@ -213,41 +213,72 @@ def main_tx(argv=None):
         tb._keep = keep
         tb.start()
         t_start = time.monotonic()
-        LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
-        t_end = time.monotonic() + a.warmup
-        while time.monotonic() < t_end and not stop.is_set():
-            time.sleep(0.2)
-        if ladder:
-            from .video_adapt import AdaptiveEncoder
-            enc = AdaptiveEncoder(s, a.source, a.input, a.seconds, src, session, run_dir, stop, ctl, ladder)
-        else:
-            enc = Encoder(encoder_command(s, a.source, a.input, a.seconds), src, session, run_dir, stop)
-        enc.start()
-        while not stop.is_set() and not enc.done.is_set():
-            time.sleep(1)
-            if gain_profile is not None and a.mode == "rf":
-                g = gain_profile(time.monotonic() - t_start)
-                for ch in range(tx_chans):
-                    usrp.set_gain(g, ch)
-                LOG.info("TX gain %.1f dB (profile)", g)
+        report["clock"] = {"monotonic": t_start, "time": time.time()}   # maps acm.history times to wall clock
+        history = report["history"] = []
+        fb_prev = [0]
+
+        def make_encoder():
+            if ladder:
+                from .video_adapt import AdaptiveEncoder
+                return AdaptiveEncoder(s, a.source, a.input, a.seconds, src, session, run_dir, stop, ctl, ladder)
+            return Encoder(encoder_command(s, a.source, a.input, a.seconds), src, session, run_dir, stop)
+
+        def tick(now, enc):
+            """Once a second: log line(s) + one row of report["history"]."""
             t = src.snapshot()
+            row = {"t": round(now - t_start, 2), "t_wall": round(time.time(), 2), "data": t["tx_enqueued_data"],
+                   "queue": t["tx_queue"], "frames": t["tx_frames"], "video": enc is not None}
             if s.acm:
                 LOG.info("TX data %d | queue %d | frames %d | ACM %s (RX SNR_eff %s dB, %d switches, loop %s s, "
                          "resent %d)", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"], t["acm_modulation"],
                          None if t["acm_snr_db"] is None else round(t["acm_snr_db"], 1), t["acm_switches"],
                          round(ctl.latency[-1], 2) if ctl.latency else None, t["acm_resent_packets"])
+                row.update(modulation=t["acm_modulation"], acm_snr_db=t["acm_snr_db"],
+                           resent=t["acm_resent_packets"], loop_s=round(ctl.latency[-1], 3) if ctl.latency else None)
+            else:
+                LOG.info("TX data %d | queue %d | frames %d", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"])
+                row["modulation"] = s.modulation
+            if enc is not None:
                 if ladder:
                     v = enc.snapshot()
                     if v["level"] is not None:
                         LOG.info("   video %s level: TS %d kb/s, backlog %.2f s, %d switches", v["modulation"],
                                  v["ts_muxrate"] // 1000, v["backlog_s"], v["switches"])
-                if fbh is not None:
-                    fr = fbrx.snapshot()
-                    LOG.info("   radio feedback: %d frames (%d used), link SNR %s dB, lost %d",
-                             fbh.frames, fbh.used, None if fr["snr_db"] is None else round(fr["snr_db"], 1),
-                             fr["lost_sync"])
-            else:
-                LOG.info("TX data %d | queue %d | frames %d", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"])
+                        row.update(video_ts_kbps=v["ts_muxrate"] / 1e3, video_kbps=v["video_bitrate"] / 1e3,
+                                   video_backlog_s=v["backlog_s"])
+                else:
+                    row.update(video_ts_kbps=s.ts_muxrate / 1e3, video_kbps=s.video_bitrate / 1e3)
+            if fbh is not None:
+                fr = fbrx.snapshot()
+                LOG.info("   radio feedback: %d frames (%d used), link SNR %s dB, lost %d",
+                         fbh.frames, fbh.used, None if fr["snr_db"] is None else round(fr["snr_db"], 1),
+                         fr["lost_sync"])
+                row.update(fb_frames=fbh.frames, fb_frames_per_s=fbh.frames - fb_prev[0], fb_used=fbh.used,
+                           fb_snr_db=fr["snr_db"], fb_lost_sync=fr["lost_sync"])
+                fb_prev[0] = fbh.frames
+            history.append(row)
+
+        LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
+        enc = None
+        next_tick = t_start + 1
+        while not stop.is_set() and not (enc is not None and enc.done.is_set()):
+            time.sleep(0.2)
+            now = time.monotonic()
+            if enc is None and now - t_start >= a.warmup:
+                enc = make_encoder()
+                enc.start()
+            if now >= next_tick:
+                next_tick += 1
+                if gain_profile is not None and a.mode == "rf":
+                    g = gain_profile(now - t_start)
+                    for ch in range(tx_chans):
+                        usrp.set_gain(g, ch)
+                    LOG.info("TX gain %.1f dB (profile)", g)
+                tick(now, enc)
+        if enc is None:                      # stopped during the warm-up: keep the report complete
+            enc = make_encoder()
+            enc.start()
+            enc.done.wait(15)
         while not stop.is_set() and src.snapshot()["tx_queue"] > 0:
             time.sleep(0.2)
         time.sleep(2)                        # trailing IDLE: RX closes the last group
@@ -420,8 +451,11 @@ def main_rx(argv=None):
                                        f"udp://127.0.0.1:{s.udp_port}?fifo_size=100000&overrun_nonfatal=1"])
         LOG.info("RX listening (start the TX now). mimo=%s mod=%s f=%.6g MHz, Ctrl+C to stop",
                  s.mimo_mode, s.modulation, s.frequency / 1e6)
-        limit = time.monotonic() + a.seconds
+        t_start = time.monotonic()
+        limit = t_start + a.seconds
         state = {"ended_at": None}
+        history = report["history"] = []           # one row per second (tools/plot_run.py)
+        report["clock"] = {"monotonic": t_start, "time": time.time()}
 
         def tick():
             """One monitor step (every second). Returns False when the RX should stop."""
@@ -442,6 +476,14 @@ def main_rx(argv=None):
                 if a.mode == "sim" and ch_sim is not None and ch_sim.profile is not None:
                     line += " (sim SNR %.1f)" % ch_sim.snr_now
             LOG.info("%s", line)
+            history.append({
+                "t": round(time.monotonic() - t_start, 2), "t_wall": round(time.time(), 2), "ok": r["ok"],
+                "rs": r["rs_fail"], "sig": r["sig_fail"], "crc": r["crc_fail"], "lost": r["lost_sync"],
+                "snr_db": r["snr_db"], "evm_db": r["evm_db"], "snr_eff_db": r["snr_eff_db"],
+                "modulation": r["modulation"], "rx_rms": round(r["rx_rms"], 5), "cond_db": r["cond_db"],
+                "data": v["data_packets"], "missing": v["missing_data_packets"],
+                "fb_frames": fbsrc.frames if fbsrc is not None else None,
+                "sim_snr_db": round(ch_sim.snr_now, 2) if ch_sim is not None else None})
             if gui is not None:
                 gui.set_status(line.replace(" | ", "\n"))
             if stop.is_set() or time.monotonic() >= limit:
