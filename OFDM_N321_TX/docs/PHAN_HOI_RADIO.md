@@ -1,7 +1,8 @@
 # Phản hồi ACM qua sóng radio (v0.4)
 
 Bên thu gửi SNR về bên phát **qua chính hai N321**, không cần Wi-Fi hay mạng giữa hai PC. Đường video chạy SISO
-trên kênh A; đường phản hồi chạy ngược chiều trên kênh B, ở một tần số khác. Tổng cộng vẫn chỉ cần 4 anten.
+trên kênh A (nhãn **RF0** trên mặt máy); đường phản hồi chạy ngược chiều trên kênh B (nhãn **RF1**), ở một tần số
+khác. Tổng cộng vẫn chỉ cần 4 anten.
 
 ```
 N321 #1 (PC phát)                                      N321 #2 (PC thu)
@@ -11,7 +12,7 @@ N321 #1 (PC phát)                                      N321 #2 (PC thu)
 
 ## 1. Bố trí anten
 
-| Máy | Kênh A | Kênh B |
+| Máy | Kênh A (RF0) | Kênh B (RF1) |
 |---|---|---|
 | N321 #1 (`.3`, PC phát) | **TX/RX A**: phát video | **RX2 B**: thu phản hồi |
 | N321 #2 (`.95`, PC thu) | **RX2 A**: thu video | **TX/RX B**: phát phản hồi |
@@ -24,11 +25,11 @@ Trên mỗi máy, đặt anten kênh B cách anten kênh A càng xa càng tốt 
 ```bash
 # PC thu (N321 .95), chạy trước:
 cd ~/MIMO-OFDM-USRP/OFDM_N321_RX
-bash scripts/start_rx.sh --mimo siso --acm --fb-link radio --play --gui --freq 921e6 --rx-gain 50 --fb-tx-gain 20
+bash scripts/start_rx.sh --mimo siso --acm --fb-link radio --play --gui --freq 921e6 --rx-gain 50 --fb-tx-gain 30
 
 # PC phát (N321 .3):
 cd ~/MIMO-OFDM-USRP/OFDM_N321_TX
-bash scripts/start_tx.sh --mimo siso --acm --fb-link radio --freq 921e6 --tx-gain 30 --fb-rx-gain 40 \
+bash scripts/start_tx.sh --mimo siso --acm --fb-link radio --freq 921e6 --tx-gain 30 --fb-rx-gain 60 \
      --acm-modcods qpsk,16qam,64qam --tx-gain-profile steps:30,20,10,20,30:10 \
      --source file --input ~/Videos/clip.mp4 --seconds 60
 ```
@@ -36,7 +37,9 @@ bash scripts/start_tx.sh --mimo siso --acm --fb-link radio --freq 921e6 --tx-gai
 - `--fb-link radio` bắt buộc đi cùng `--acm` và `--mimo siso` ở **cả hai** bên.
 - Tần số phản hồi mặc định 922,7 MHz (`--fb-freq`), tốc độ lấy mẫu 500 kS/s (`--fb-rate`), băng chiếm khoảng
   0,4 MHz (922,5–922,9 MHz), vẫn trong dải 920–923 MHz. Hai bên phải cùng `--fb-freq` và `--fb-rate`.
-- Gain phản hồi: `--fb-tx-gain` ở bên thu (mặc định 20, tối đa 30 khi dùng anten), `--fb-rx-gain` ở bên phát (mặc định 40).
+- Gain phản hồi: `--fb-tx-gain` ở bên thu (mặc định 30 = mức tối đa khi dùng anten), `--fb-rx-gain` ở bên phát
+  (mặc định 60 = mức tối đa của N321). Phản hồi yếu thì không còn gain để tăng: đưa anten RF1 của hai máy lại gần
+  hoặc dùng `--fb-rate 250e3`.
 
 ## 3. Đọc log
 
@@ -48,15 +51,15 @@ Bên phát in thêm mỗi giây:
 
 | Trường | Nên thấy | Nếu không |
 |---|---|---|
-| `frames` | Tăng khoảng 133 khung/s (66 khung/s nếu `--fb-rate 250e3`) | Đứng ở 0: kiểm tra anten RX2 B (máy phát) và TX/RX B (máy thu), tăng `--fb-tx-gain` (≤ 30) hoặc `--fb-rx-gain` |
+| `frames` | Tăng khoảng 133 khung/s (66 khung/s nếu `--fb-rate 250e3`) | Đứng ở 0: kiểm tra anten RX2 B (máy phát) và TX/RX B (máy thu); gain đã ở mức tối đa (30/60) nên đưa hai anten RF1 lại gần hoặc thử `--fb-rate 250e3` |
 | `used` | Tăng gần bằng `frames` khi video đã chạy | Phản hồi chỉ được dùng khi bên thu vừa giải được khung ACM (trong 0,5 s) |
 | `link SNR` | Trên khoảng 10 dB | BPSK chịu được SNR thấp, nhưng nên giữ trên 10 dB |
 | `loop` (dòng TX data) | Khoảng 0,05–0,1 s | Lớn hơn nhiều: phản hồi bị mất, hoặc máy không kịp thời gian thực |
 
 Bên thu in thêm `fb <số> frames`: số khung phản hồi đã phát.
 
-**Tự nhiễu:** nếu bật phản hồi làm video ở bên thu xấu đi (EVM tăng, `rs` tăng), giảm `--fb-tx-gain`, đưa anten
-TX/RX B ra xa anten RX2 A, hoặc kéo xa hai tần số (ví dụ `--freq 920.5e6 --fb-freq 922.7e6`).
+**Tự nhiễu:** nếu bật phản hồi làm video ở bên thu xấu đi (EVM tăng, `rs` tăng), giảm `--fb-tx-gain`
+(mặc định 30 là cao nhất, thử 15–20), đưa anten TX/RX B ra xa anten RX2 A, hoặc kéo xa hai tần số (ví dụ `--freq 920.5e6 --fb-freq 922.7e6`).
 
 ## 4. Mô phỏng (một PC, không cần radio)
 

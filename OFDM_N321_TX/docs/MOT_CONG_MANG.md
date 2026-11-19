@@ -7,6 +7,8 @@ của PC nối với **N321 #2 (thu)**.
 2. Chép file đó sang N321 #1 một lần.
 3. N321 #1 tự phát lại file đó qua UHD trên chính nó.
 
+Kênh A = cổng **RF0**, kênh B = cổng **RF1** theo nhãn trên mặt máy N321.
+
 ```
               (bước A: chép file, dây mạng tạm cắm vào N321 #1)
 PC ──USB console──► N321 #1: python3 n321_replay.py ─► TX/RX A+B ~~~ anten ~~~

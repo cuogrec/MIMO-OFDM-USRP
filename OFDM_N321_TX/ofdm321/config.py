@@ -38,8 +38,8 @@ class Settings:
     fb_link: str = "udp"             # ACM feedback path: udp (network) | radio (N321 channel B, SISO only)
     fb_freq: float = 922.7e6         # radio feedback carrier (RX machine TX/RX B -> TX machine RX2 B)
     fb_rate: float = 500e3           # radio feedback sample rate (MCR / even integer); CFO range +-fb_rate/64
-    fb_tx_gain: float = 20.0         # RX machine, TX/RX B (antenna: <= 30)
-    fb_rx_gain: float = 40.0         # TX machine, RX2 B
+    fb_tx_gain: float = 30.0         # RX machine, TX/RX B = RF1 (antenna: <= 30)
+    fb_rx_gain: float = 60.0         # TX machine, RX2 B = RF1
     fb_zmq_addr: str = "tcp://127.0.0.1:5561"   # simulation: feedback link (RX PUSH -> TX PULL)
     sim_fb_snr_db: float = 20.0      # simulation: SNR of the feedback link
     # --- N321 ------------------------------------------------------------

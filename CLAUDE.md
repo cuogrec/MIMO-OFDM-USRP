@@ -9,10 +9,11 @@ Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0
 
 | | PC | Interface | N321 | Serial | Role | Antennas |
 |---|---|---|---|---|---|---|
-| RX | `thuy-anh` (HP 280 Pro G8) | `enp1s0` 192.168.180.1/24 | 192.168.180.95, MTU 1500 | 32550F7 | receiver | RX2 A (video); TX/RX B (radio feedback, v0.4) |
-| TX | `cuong` (Legion 5 Pro) | `enp93s0` 192.168.180.1/24 | 192.168.180.3, MTU 9000 | 3258433 | transmitter, loopback | TX/RX A (video); RX2 B (radio feedback, v0.4) |
+| RX | `thuy-anh` (HP 280 Pro G8) | `enp1s0` 192.168.180.1/24 | 192.168.180.95, MTU 1500 | 32550F7 | receiver | RX2 A/RF0 (video); TX/RX B/RF1 (radio feedback, v0.4) |
+| TX | `cuong` (Legion 5 Pro) | `enp93s0` 192.168.180.1/24 | 192.168.180.3, MTU 9000 | 3258433 | transmitter, loopback | TX/RX A/RF0 (video); RX2 B/RF1 (radio feedback, v0.4) |
 
 - Both N321: FPGA 8.2 HG image (SFP0 = 1 GbE, RJ45 SFP module), MPM 5.3, has GPSDO. UHD product name `n320`.
+- Channel A = **RF0**, channel B = **RF1** (front-panel labels on the N321); UHD subdev `A:0` = ch 0, `B:0` = ch 1.
 - MCR 200 MHz, video 1 MS/s (decim 200), subdev `A:0 B:0`, sc16 over the wire.
 - Two separate PCs, each with ONE Ethernet port wired to its N321. The lab Wi-Fi isolates clients:
   the two PCs cannot reach each other over the network (hence radio feedback).
@@ -26,7 +27,7 @@ Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0
   >= 30 dB and `--attenuation-db`.
 - Transmit only in 920–923 MHz (Vietnam). Video default in use: `--freq 921e6`; radio feedback 922.7 MHz.
 - Ask the user before starting any command that transmits RF (`start_tx.sh`, `run_antenna_915.sh`,
-  `start_rx.sh --fb-link radio` also transmits on channel B).
+  `start_rx.sh --fb-link radio` also transmits on channel B = RF1).
 
 ## Repo layout
 
@@ -75,7 +76,7 @@ bash OFDM_N321_RX/scripts/sim_rx_fbradio.sh --gui     ; bash OFDM_N321_TX/script
 bash scripts/start_rx.sh --play --gui --freq 921e6 --rx-gain 50                       # in OFDM_N321_RX
 bash scripts/start_tx.sh --freq 921e6 --tx-gain 30 --source file --input <video> --seconds 60   # in OFDM_N321_TX
 # ACM with radio feedback (v0.4, not yet tried on RF): add to BOTH sides
-#   --mimo siso --acm --fb-link radio   (+ RX: --fb-tx-gain 20, TX: --fb-rx-gain 40 --acm-modcods qpsk,16qam,64qam)
+#   --mimo siso --acm --fb-link radio   (+ TX: --acm-modcods qpsk,16qam,64qam; fb gains default to the max: RX --fb-tx-gain 30, TX --fb-rx-gain 60)
 ```
 
 Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq` (and `--fb-freq`, `--fb-rate`).

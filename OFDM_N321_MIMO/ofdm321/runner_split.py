@@ -95,7 +95,7 @@ def main_tx(argv=None):
     p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
-    p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RX2 B gain (40)")
+    p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RX2 B (RF1) gain (60)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain"])
@@ -279,7 +279,7 @@ def main_rx(argv=None):
     p.add_argument("--acm-host", dest="acm_host", help="ACM: IP of the TX PC (default 127.0.0.1)")
     p.add_argument("--fb-delay", dest="acm_fb_delay_s", type=float,
                    help="ACM: extra feedback delay in s (0.25-0.5 emulates a GEO satellite)")
-    p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: TX/RX B gain (20)")
+    p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: TX/RX B (RF1) gain (30)")
     p.add_argument("--fb-snr", dest="sim_fb_snr_db", type=float, help="SIM: SNR of the feedback link (20)")
     p.add_argument("--rf-link", choices=("antenna", "cable"), default="antenna",
                    help="radio feedback transmitter: antenna (gain <= 30) or cable (+ --attenuation-db)")

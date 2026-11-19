@@ -2,8 +2,8 @@
 
 | Folder | Máy | Anten | Việc |
 |---|---|---|---|
-| `OFDM_N321_TX` | N321 **#1** (phát) | 2 anten trên **TX/RX** của kênh A và kênh B | FFmpeg → đóng gói + FEC → OFDM MIMO → phát |
-| `OFDM_N321_RX` | N321 **#2** (thu) | 2 anten trên **RX2** của kênh A và kênh B | thu → đồng bộ, ước lượng kênh 2×2 → giải mã → video |
+| `OFDM_N321_TX` | N321 **#1** (phát) | 2 anten trên **TX/RX** của kênh A (RF0) và kênh B (RF1) | FFmpeg → đóng gói + FEC → OFDM MIMO → phát |
+| `OFDM_N321_RX` | N321 **#2** (thu) | 2 anten trên **RX2** của kênh A (RF0) và kênh B (RF1) | thu → đồng bộ, ước lượng kênh 2×2 → giải mã → video |
 
 Hai folder dùng chung code `ofdm321` (giống bản loopback `OFDM_N321_MIMO`). Mỗi bên chỉ mở radio
 của mình. Hai N321 chạy clock riêng, nên bộ thu tự bù lệch tần số (CFO) và lệch tốc độ lấy mẫu.
@@ -88,6 +88,7 @@ của RX trùng với sha256 TX in ra.
 ## 5. Chạy thật với hai N321
 
 1. **Anten.** N321 #1: hai anten 915 MHz trên TX/RX A và TX/RX B. N321 #2: hai anten trên RX2 A và RX2 B.
+   - Trên mặt máy N321, kênh A có nhãn **RF0**, kênh B có nhãn **RF1** (trong UHD: subdev `A:0` = kênh 0, `B:0` = kênh 1).
    - Hai anten trên cùng một máy đặt cách nhau **≥ 16 cm** (nửa bước sóng ở 915 MHz).
    - Hai máy đặt cách nhau 1–3 m khi thử lần đầu.
    - Chỉ phát ở băng tần được phép. Ở Việt Nam nên dùng khoảng 920–923 MHz, ví dụ thêm `--freq 921e6` ở **cả hai** phía.

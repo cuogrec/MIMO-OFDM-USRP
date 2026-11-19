@@ -1,7 +1,7 @@
 # Đấu nối mạch vòng 2×2 trên một N321
 
 Cổng mặt trước của mỗi kênh: **TX/RX** (dùng để phát) và **RX2** (dùng để thu).
-Kênh 0 là A:0, kênh 1 là B:0. Luôn tắt chương trình trước khi cắm hoặc rút cáp RF.
+Kênh 0 là A:0 (nhãn **RF0** trên mặt máy), kênh 1 là B:0 (nhãn **RF1**). Luôn tắt chương trình trước khi cắm hoặc rút cáp RF.
 
 ## A. Cáp thẳng (đầu tiên nên làm)
 
