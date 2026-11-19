@@ -1,7 +1,7 @@
 # CLAUDE.md — MIMO-OFDM-USRP
 
 Real-time video over an OFDM link (2x2 MIMO or SISO) between two USRP N321, written in
-Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.4.0.
+Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.5.0.
 
 **Reply to the user in Vietnamese.** Short, concrete answers; give exact commands to run.
 
@@ -50,21 +50,26 @@ Three self-contained folders, each with its OWN copy of the `ofdm321` package. W
 - `inner_rs.py`, `soft_inner_rs.py`, `fec_rs.py`, `verified_fec.py`, `protocol.py` — RS(248,216) inner code,
   212-byte `OVN1` app packets, verified RS8+8 outer code (needs 10/16 shards). Wire format shared with the
   older N210 project: do not change it.
-- `blocks.py` — GNU Radio blocks: `MimoTxSource`, `MimoRxSink` (ring buffer 2^18, acquire/track, ports
-  `pdus` and `const`), `MimoChannelSim` (+ `--snr-profile`), `SfoResampler` (16-tap windowed sinc),
-  `VideoReceiver`, `FeedbackRadioSource`.
+- `blocks.py` — GNU Radio blocks: `MimoTxSource` (ACM: resend on downshift, `--acm-resend`), `MimoRxSink`
+  (ring buffer 2^18, acquire/track, ports `pdus` and `const`), `MimoChannelSim` (+ `--snr-profile`),
+  `SfoResampler` (16-tap windowed sinc), `VideoReceiver` (0.3 s reorder buffer with ACM, `--reorder`),
+  `FeedbackRadioSource`.
 - `acm.py` — `AcmController` (thresholds 9/14/20/26 dB SNR_eff, margin 1, hysteresis 1, hold 0.5 s,
-  confirmation-based error handling, 1.5 s timeout), `FeedbackReporter`, UDP `FeedbackSender`/`FeedbackReceiver`,
-  radio feedback packet `OFB1` + `RadioFeedbackHandler`.
-- `hardware.py` — UHD setup, timed start, LO-lock checks, per-channel streams for radio feedback.
+  confirmation-based error handling, 1.5 s timeout, `mod_since`), `FeedbackReporter`, UDP `FeedbackSender`
+  (every 0.02 s)/`FeedbackReceiver`, radio feedback packet `OFB1` + `RadioFeedbackHandler`, `FeedbackWatchdog`.
+- `video_adapt.py` (v0.5) — ACM-driven video bitrate: one FFmpeg, one TS rendition per modulation (75 % of its
+  capacity), spliced at keyframes (GOP 1 s) with TS continuity counters rewritten; down at once, up after 5 s stable.
+- `hardware.py` — UHD setup, timed start, LO-lock checks, per-channel streams for radio feedback,
+  `port_label()` (RF0/RF1 names) and `antenna_summary()` (start-up line "Cắm anten ...").
 - `config.py` — `Settings` dataclass + `config/default.json`; every CLI option maps to a field.
 - `rxgui.py` — `--gui`: constellation + 2-channel spectrum + status line.
-- `runner_split.py` — TX/RX programs, write `runs/<stamp>_<tx|rx>_<rf|sim>_<mimo>_<mod>/report.json`.
+- `runner_split.py` — TX/RX programs, write `runs/<stamp>_<tx|rx>_<rf|sim>_<mimo>_<mod>/report.json`
+  (v0.5: per-second `history`, TX `video` section, `clock` reference). `tools/plot_run.py` plots TX and/or RX reports.
 
 ## Commands
 
 ```bash
-python3 OFDM_N321_RX/tests/test_modem.py          # 11 tests, must all PASS before committing
+python3 OFDM_N321_RX/tests/test_modem.py          # 18 tests (~1 min, needs ffmpeg), must all PASS before committing
 python3 OFDM_N321_TX/tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -75,8 +80,10 @@ bash OFDM_N321_RX/scripts/sim_rx_fbradio.sh --gui     ; bash OFDM_N321_TX/script
 # RF, two PCs (RX PC first)
 bash scripts/start_rx.sh --play --gui --freq 921e6 --rx-gain 50                       # in OFDM_N321_RX
 bash scripts/start_tx.sh --freq 921e6 --tx-gain 30 --source file --input <video> --seconds 60   # in OFDM_N321_TX
-# ACM with radio feedback (v0.4, not yet tried on RF): add to BOTH sides
+# ACM with radio feedback (RF OK 19/11): add to BOTH sides
 #   --mimo siso --acm --fb-link radio   (+ TX: --acm-modcods qpsk,16qam,64qam; fb gains default to the max: RX --fb-tx-gain 30, TX --fb-rx-gain 60)
+# v0.5: with --acm the video bitrate follows the modulation (TX --no-adaptive-video to keep 260 kb/s)
+python3 tools/plot_run.py <TX report.json> <RX report.json>     # plot_run.png into each run folder
 ```
 
 Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq` (and `--fb-freq`, `--fb-rate`).
@@ -86,20 +93,24 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-19)
+## Status (2026-11-19, v0.5.0)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
-  EVM −22 dB, 0 errors while observed. RX B branch ~10 dB weaker than RX A (cond ~31 dB): unresolved.
-- ACM: works in simulation (+71% mean capacity vs fixed QPSK, 1.3 % loss). Not run on RF yet.
-- Radio feedback (v0.4): works in simulation (loop latency 0.04–0.09 s). Not run on RF yet.
-- Video bitrate is fixed (260 kb/s TS) and does not follow ACM.
+  EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
+- RF two N321, SISO + ACM + radio feedback (19/11), fb gains 30/60 (now the defaults): RF_RX_VERIFIED, 0 lost,
+  16QAM 89 % of frames, SNR 24 dB, EVM −20 dB. Video was fixed 260 kb/s, so most 16QAM frames were IDLE.
+- v0.5 (simulation only so far): video bitrate follows ACM (BPSK 150 / QPSK 300 / 16QAM 600 / 64QAM 900 kb/s TS
+  at 1 MS/s); resend on ACM downshift + RX reorder buffer; UDP feedback 0.02 s. Sim steps:30,22,14,22,30:8 at
+  1 MS/s: alamouti+UDP and siso+radio both SIM_RX_VERIFIED, 0 missing, 4 bitrate switches; mean TS 525 kb/s vs
+  260 fixed. History per second in both reports + tools/plot_run.py; radio feedback watchdog; RF0/RF1 names.
 
 ## Next steps (agreed direction)
 
-1. First RF run of `--mimo siso --acm --fb-link radio`; tune fb gains, watch self-interference.
-2. Fix/diagnose the weak RX B branch (swap antennas).
+1. First RF run of v0.5 (`--mimo siso --acm --fb-link radio`, adaptive video); check ffplay at bitrate switches,
+   TX queue/backlog after downshifts, `plot_run.py` plots.
+2. Fix/diagnose the weak RF1 RX2 branch (swap antennas).
 3. Systematic measurements script (loss/EVM vs gain and mode, ACM vs fixed), plots for the report.
-4. ACM-driven video bitrate; LDPC instead of RS; GPSDO sync; later a DVB-S2-style single-carrier modem.
+4. LDPC instead of RS; GPSDO sync; later a DVB-S2-style single-carrier modem.
 
 Docs: `OFDM_N321_*/docs/` — `THIET_KE.md`, `HUONG_DAN_2_N321.md`, `GIAI_MEM_INTERLEAVING.md`, `ACM.md`,
 `PHAN_HOI_RADIO.md`, `MOT_CONG_MANG.md`. Full project report (Vietnamese) is a Claude Doc:

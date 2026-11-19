@@ -1,6 +1,6 @@
 # OFDM_N321_RX — máy THU (N321 #2)
 
-Thu video OFDM 2×2 MIMO bằng 2 anten trên **RX2 A:0** và **RX2 B:0**. Máy phát dùng folder `OFDM_N321_TX`.
+Thu video OFDM 2×2 MIMO bằng 2 anten trên **RF0 RX2** (A:0) và **RF1 RX2** (B:0). Máy phát dùng folder `OFDM_N321_TX`.
 Hướng dẫn đầy đủ: **[docs/HUONG_DAN_2_N321.md](docs/HUONG_DAN_2_N321.md)**.
 
 ```bash
@@ -23,6 +23,13 @@ Mặc định: alamouti QPSK, 1 MS/s, 915 MHz, `rx_gain` 35, N321 ở `192.168.1
 (sửa `config/default.json` hoặc dùng `--args addr=...,master_clock_rate=200e6`).
 RX tự bám session của TX đầu tiên nó nghe được (`--session N` để chỉ nhận một session cụ thể).
 Thành công khi in `RF_RX_VERIFIED`: nhận được END, không thiếu DATA và video giải mã được.
+
+## v0.5: bitrate video theo ACM
+
+Với `--acm`, máy phát đổi bitrate video theo điều chế; máy thu không cần thêm tùy chọn (ffplay chạy liền mạch qua
+các lần đổi). Bộ thu có bộ đệm sắp xếp lại 0,3 s trước RS8+8 (`--reorder`, mặc định khi có `--acm`) cho các gói
+máy phát gửi lại sau khi hạ điều chế. `report.json` có `history` mỗi giây; vẽ bằng
+`python3 tools/plot_run.py runs/<lượt RX> [report.json của TX]`. Chi tiết: [docs/ACM.md](docs/ACM.md).
 
 ## v0.2: giải mềm và interleaving
 

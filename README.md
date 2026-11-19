@@ -14,16 +14,21 @@ FFmpeg (H.264 → MPEG-TS) → gói 212 B + RS8+8 → CRC32 + RS(248,216) → in
 | Folder | Dùng cho | Lệnh chính |
 |---|---|---|
 | [`OFDM_N321_MIMO`](OFDM_N321_MIMO) | Loopback trên **một** N321 (2 TX + 2 RX) | `bash scripts/run_antenna_915.sh --mimo alamouti --play` |
-| [`OFDM_N321_TX`](OFDM_N321_TX) | N321 **#1** phát (anten trên TX/RX A, B) | `bash scripts/start_tx.sh --source file --input video.mp4` |
-| [`OFDM_N321_RX`](OFDM_N321_RX) | N321 **#2** thu (anten trên RX2 A, B) | `bash scripts/start_rx.sh --play` (chạy trước TX) |
+| [`OFDM_N321_TX`](OFDM_N321_TX) | N321 **#1** phát (anten trên RF0 TX/RX, RF1 TX/RX) | `bash scripts/start_tx.sh --source file --input video.mp4` |
+| [`OFDM_N321_RX`](OFDM_N321_RX) | N321 **#2** thu (anten trên RF0 RX2, RF1 RX2) | `bash scripts/start_rx.sh --play` (chạy trước TX) |
 
-Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`.
+Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`. Cổng được gọi theo nhãn trên mặt máy N321:
+**RF0** = kênh A (UHD `A:0`), **RF1** = kênh B (`B:0`).
 
 ## Tính năng
 
 - 4 chế độ: `siso`, `simo` (MRC), `alamouti` (SFBC 2×2, mặc định), `smux` (2 luồng, MMSE); điều chế BPSK, QPSK, 16QAM, 64QAM.
 - **Điều chế thích ứng (ACM, v0.3):** máy phát chọn điều chế cho từng khung theo SNR máy thu báo về qua UDP ([ACM.md](OFDM_N321_RX/docs/ACM.md)).
-- **Phản hồi qua sóng radio (v0.4):** chạy SISO trên kênh A, bên thu gửi SNR về bên phát trên kênh B của hai N321.
+- **Phản hồi qua sóng radio (v0.4):** chạy SISO trên RF0, bên thu gửi SNR về bên phát trên RF1 của hai N321
+  ([PHAN_HOI_RADIO.md](OFDM_N321_RX/docs/PHAN_HOI_RADIO.md)).
+- **Bitrate video theo ACM (v0.5):** một FFmpeg mã hóa mỗi điều chế một bản (BPSK 150 … 64QAM 900 kb/s TS ở 1 MS/s),
+  máy phát chuyển bản tại khung khóa; phát lại khi hạ điều chế + bộ đệm sắp xếp lại ở máy thu; lịch sử mỗi giây
+  trong `report.json` và `tools/plot_run.py` để vẽ đồ thị.
 - Máy thu có cửa sổ `--gui`: chòm sao sau cân bằng và phổ 2 kênh.
 - Khung OFDM: FFT 64, CP 16, 48 sóng mang dữ liệu + 4 pilot. Mỗi khung có STF (dùng CSD), 2 LTF ma trận P và SIG có CRC16.
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
@@ -59,7 +64,10 @@ Hướng dẫn chi tiết:
 | Mô phỏng hai N321 (CFO đến 5 kHz, SFO đến 10 ppm) | PASS ở siso, alamouti, smux |
 | Giải mềm + interleaving (v0.2), mô phỏng | SISO 18 dB: mất khung 38% → 25%; smux 20 dB: 40% → 29% |
 | ACM (v0.3), mô phỏng SNR 30→11→28 dB | Mất 1,3% gói (QPSK cố định 0%, 16QAM cố định 47%), dung lượng TB +71% so với QPSK |
-| RF giữa hai N321 | Chưa chạy |
+| RF hai N321, Alamouti QPSK, 921 MHz, anten (17/11/2026) | `RF_RX_VERIFIED`, SNR 26 dB, EVM −22 dB, 0 lỗi |
+| RF hai N321, SISO + ACM + phản hồi radio, 921/922,7 MHz, fb gain 30/60 (19/11/2026) | `RF_RX_VERIFIED`, 0 gói mất, 16QAM 89% khung, SNR 24 dB, EVM −20 dB; video cố định 260 kb/s nên dư dung lượng |
+| Bitrate theo ACM (v0.5), mô phỏng SNR 30→22→14→22→30 dB, 1 MS/s | UDP (alamouti) và radio (siso): `SIM_RX_VERIFIED`, thiếu 0 gói; TS trung bình 525 kb/s (alamouti) so với 260 kb/s cố định |
+| Bitrate theo ACM trên RF | Chưa chạy |
 
 ## An toàn RF
 
