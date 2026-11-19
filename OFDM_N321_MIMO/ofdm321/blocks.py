@@ -1,5 +1,6 @@
 """GNU Radio blocks: 2-channel MIMO OFDM source/sink, 2x2 channel simulator,
 video PDU receiver. All PHY maths lives in modem.py (numpy)."""
+from collections import deque
 import logging
 import queue
 import socket
@@ -38,6 +39,14 @@ class MimoTxSource(gr.sync_block):
                 n = codewords_per_frame(s.mimo_mode, m)
                 self.idle_frames[m] = self.mod.frame([self.idle] * n, m)
         self.mod_frames = {}                              # frames sent per modulation (ACM)
+        # ACM resend on downshift: packets sent in the last loop delay at a higher modulation were
+        # most likely lost (the RX had not reported the fade yet). They are sent again, first.
+        # The RX ignores copies it already has (closed or duplicate), so nothing changes there.
+        self.resend_min_s = float(getattr(s, "acm_resend_s", 0.0)) if acm is not None else 0.0
+        self.recent = deque()                             # (monotonic t, modulation rank, packet)
+        self.resend = deque()
+        self.last_rank = None
+        self.resend_events = self.resent_packets = 0
         self.packets_sent = 0
         self.pending = np.zeros((2, 0), np.complex64)
         self.pos = 0
@@ -47,6 +56,7 @@ class MimoTxSource(gr.sync_block):
         self.produced = 0
         self.lock = threading.Lock()
         self.frames = self.data_frames = self.enqueued_data = 0
+        self.queue_max = 0
         self.set_output_multiple(SYM)
         self.set_min_noutput_items(8 * SYM)
 
@@ -54,9 +64,9 @@ class MimoTxSource(gr.sync_block):
         while not stop_event.is_set():
             try:
                 self.packets.put(raw, timeout=0.1)
-                if raw[5] == DATA:
-                    with self.lock:
-                        self.enqueued_data += 1
+                with self.lock:
+                    self.queue_max = max(self.queue_max, self.packets.qsize())
+                    self.enqueued_data += raw[5] == DATA
                 return True
             except queue.Full:
                 continue
@@ -96,16 +106,40 @@ class MimoTxSource(gr.sync_block):
         self.produced += n
         return n
 
+    def _resend_window(self):
+        lat = sorted(self.acm.latency)
+        loop = lat[len(lat) // 2] if lat else 0.0
+        return min(0.5, max(self.resend_min_s, 1.5 * loop))
+
     def _next_acm_frame(self):
         m = self.acm.modulation
         n = codewords_per_frame(self.mod.mode, m)
+        rank = self.acm.modcods.index(m)
+        if self.resend_min_s > 0:
+            now = time.monotonic()
+            win = self._resend_window()
+            while self.recent and self.recent[0][0] < now - win:
+                self.recent.popleft()
+            if self.last_rank is not None and rank < self.last_rank and self.recent:
+                again = [pk for _, r, pk in self.recent if r > rank]
+                self.resend.extend(again)
+                self.recent.clear()
+                with self.lock:
+                    self.resend_events += 1
+                    self.resent_packets += len(again)
+        self.last_rank = rank
         batch = []
+        while self.resend and len(batch) < n:
+            batch.append(self.resend.popleft())
         while len(batch) < n:
             try:
                 batch.append(self.packets.get_nowait())
             except queue.Empty:
                 break
         if batch:
+            if self.resend_min_s > 0:
+                now = time.monotonic()
+                self.recent.extend((now, rank, pk) for pk in batch)
             data = sum(r[5] == DATA for r in batch)
             self.pending = self.mod.frame(batch + [self.idle] * (n - len(batch)), m)
         else:
@@ -121,10 +155,12 @@ class MimoTxSource(gr.sync_block):
         with self.lock:
             out = {"tx_frames": self.frames, "tx_data_frames": self.data_frames,
                    "tx_enqueued_data": self.enqueued_data, "tx_queue": self.packets.qsize(),
+                   "tx_queue_max": self.queue_max, "tx_queue_size": self.packets.maxsize,
                    "tx_packets": self.packets_sent, "frame_samples": self.mod.frame_len}
             if self.acm is not None:
                 out.update(acm_modulation=self.acm.modulation, acm_snr_db=self.acm.snr,
-                           acm_switches=self.acm.switches, acm_frames=dict(self.mod_frames))
+                           acm_switches=self.acm.switches, acm_frames=dict(self.mod_frames),
+                           acm_resend_events=self.resend_events, acm_resent_packets=self.resent_packets)
             return out
 
 
@@ -420,9 +456,15 @@ def parse_snr_profile(text):
 
 
 class VideoReceiver(gr.basic_block):
-    """Post-CRC packets -> verified RS8+8 reassembly -> TS file + UDP (as in N210 v1.23)."""
+    """Post-CRC packets -> verified RS8+8 reassembly -> TS file + UDP (as in N210 v1.23).
 
-    def __init__(self, session, path, udp_port):
+    reorder_s > 0 (ACM): packets wait up to reorder_s in a small buffer sorted by
+    (RS group, DATA before parity, index) before the RS8+8 state sees them. After an ACM
+    downshift the TX resends the packets of the last loop delay; a few codewords of the old
+    modulation may still get through first, and without this buffer they would close the RS
+    group before the resent copies arrive. The state itself (and the wire format) is unchanged."""
+
+    def __init__(self, session, path, udp_port, reorder_s=0.0):
         """session=None: adopt the session of the first valid packet (two-machine RX)."""
         gr.basic_block.__init__(self, "Video PDU receiver", [], [])
         self.session = session
@@ -434,6 +476,11 @@ class VideoReceiver(gr.basic_block):
         self.dest = ("127.0.0.1", udp_port)
         self.pdus = self.errors = 0
         self.closed = False
+        self.reorder_s = float(reorder_s)
+        self.heap = []
+        self.heap_n = 0                         # tie-breaker: arrival order
+        self.reordered = 0                      # packets that overtook an earlier one
+        self.last_key = None
         self.message_port_register_in(pmt.intern("pdus"))
         self.set_msg_handler(pmt.intern("pdus"), self.handle)
 
@@ -442,6 +489,19 @@ class VideoReceiver(gr.basic_block):
         from .verified_fec import RSParityCheckedState
         return RSParityCheckedState(session)
 
+    @staticmethod
+    def _order_key(raw):
+        """(group base, 0 DATA / 1 parity / 2 END, index) or None for IDLE / unknown."""
+        from .protocol import END, RS8_PARITY
+        kind, seq, stamp = raw[5], int.from_bytes(raw[12:16], "big"), int.from_bytes(raw[16:24], "big")
+        if kind == DATA:
+            return (seq - seq % 8, 0, seq)
+        if kind == RS8_PARITY:
+            return (seq, 1, stamp & 0xFF)
+        if kind == END:
+            return (seq, 2, 0)
+        return None
+
     def handle(self, msg):
         try:
             raw = bytes(pmt.u8vector_elements(pmt.cdr(msg)))
@@ -449,26 +509,52 @@ class VideoReceiver(gr.basic_block):
                 if self.closed:
                     return
                 self.pdus += 1
-                if self.state is None:
-                    try:
-                        self.session = unpack_packet(raw)[1]
-                    except ValueError:
-                        return
-                    self.state = self._new_state(self.session)
-                    LOG.info("RX adopted TX session %d", self.session)
-                payload = self.state.ingest(raw)
-                if payload:
-                    self.file.write(payload)
-                    try:
-                        self.sock.sendto(payload, self.dest)
-                    except OSError:
-                        pass
-                if self.state.final_packet_count is not None:
-                    self.file.flush()
-                    self.ended.set()
+                key = self._order_key(raw) if self.reorder_s > 0 and len(raw) == PACKET_BYTES else None
+                if key is None:
+                    self._ingest(raw)
+                else:
+                    import heapq
+                    now = time.monotonic()
+                    heapq.heappush(self.heap, (key, self.heap_n, now, raw))
+                    self.heap_n += 1
+                    self._release(now - self.reorder_s)
         except Exception:      # noqa: BLE001
             self.errors += 1
             LOG.exception("PDU handler failed")
+
+    def _release(self, older_than):
+        import heapq
+        while self.heap and self.heap[0][2] <= older_than:
+            key, _, _, raw = heapq.heappop(self.heap)
+            if self.last_key is not None and key < self.last_key:
+                self.reordered += 1
+            self.last_key = key if self.last_key is None else max(key, self.last_key)
+            self._ingest(raw)
+
+    def _ingest(self, raw):
+        if self.state is None:
+            try:
+                self.session = unpack_packet(raw)[1]
+            except ValueError:
+                return
+            self.state = self._new_state(self.session)
+            LOG.info("RX adopted TX session %d", self.session)
+        payload = self.state.ingest(raw)
+        if payload:
+            self.file.write(payload)
+            try:
+                self.sock.sendto(payload, self.dest)
+            except OSError:
+                pass
+        if self.state.final_packet_count is not None:
+            self.file.flush()
+            self.ended.set()
+
+    def poll(self):
+        """Release packets that waited long enough (call when no PDU arrives, e.g. once a second)."""
+        with self.lock:
+            if not self.closed and self.heap:
+                self._release(time.monotonic() - self.reorder_s)
 
     def snapshot(self):
         with self.lock:
@@ -478,11 +564,14 @@ class VideoReceiver(gr.basic_block):
             else:
                 snap = self.state.snapshot()
             snap.update(post_crc_pdus=self.pdus, handler_errors=self.errors, session=self.session)
+            if self.reorder_s > 0:
+                snap.update(reorder_s=self.reorder_s, reorder_waiting=len(self.heap))
             return snap
 
     def close(self):
         with self.lock:
             if not self.closed:
+                self._release(float("inf"))     # whatever still waits goes to the RS8+8 state
                 self.closed = True
                 self.file.close()
                 self.sock.close()

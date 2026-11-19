@@ -34,10 +34,15 @@ class Settings:
     acm_margin_db: float = 1.0       # TX: extra SNR above the calibrated threshold
     acm_host: str = "127.0.0.1"      # RX: IP of the TX PC (feedback destination)
     acm_port: int = 5003             # UDP port of the feedback channel
+    acm_resend_s: float = 0.1        # TX: on an ACM downshift resend packets of the last max(this, 1.5 x loop) s (0 = off)
+    rx_reorder_s: float | None = None  # RX: reorder buffer before RS8+8 (None = 0.3 s with acm, else off)
     acm_fb_delay_s: float = 0.0      # RX: extra feedback delay (0.5 ~ GEO satellite round trip)
     fb_link: str = "udp"             # ACM feedback path: udp (network) | radio (N321 channel B, SISO only)
     fb_freq: float = 922.7e6         # radio feedback carrier (RX machine TX/RX B -> TX machine RX2 B)
     fb_rate: float = 500e3           # radio feedback sample rate (MCR / even integer); CFO range +-fb_rate/64
+    adaptive_video: bool | None = None  # TX: video bitrate follows the ACM modulation (None = on with acm)
+    adaptive_video_fill: float = 0.75   # TX: TS mux rate = this share of the TS capacity of each modulation
+    adaptive_video_hold_s: float = 5.0  # TX: a higher modulation must be stable this long before the video steps up
     fb_tx_gain: float = 30.0         # RX machine, TX/RX B = RF1 (antenna: <= 30)
     fb_rx_gain: float = 60.0         # TX machine, RX2 B = RF1
     fb_zmq_addr: str = "tcp://127.0.0.1:5561"   # simulation: feedback link (RX PUSH -> TX PULL)
@@ -136,12 +141,32 @@ class Settings:
                 raise ValueError("fb_freq overlaps the video channel: keep them >= 1 MHz apart")
             if not 0 <= self.fb_tx_gain <= 60 or not 0 <= self.fb_rx_gain <= 60:
                 raise ValueError("feedback gains are 0..60 dB")
+        if self.rx_reorder_s is not None and not 0 <= self.rx_reorder_s <= 2:
+            raise ValueError("rx_reorder_s must be 0..2 s")
+        if not 0 <= self.acm_resend_s <= 0.5:
+            raise ValueError("acm_resend_s must be 0..0.5 s")
+        if self.adaptive_video and not self.acm:
+            raise ValueError("adaptive_video follows the ACM modulation: add --acm")
+        if not 0.2 <= self.adaptive_video_fill <= 0.95 or not 0 <= self.adaptive_video_hold_s <= 60:
+            raise ValueError("adaptive_video_fill must be 0.2..0.95 and adaptive_video_hold_s 0..60")
         if self.acm:
             from .acm import parse_modcods
             parse_modcods(self.acm_modcods)
             if not 1024 <= self.acm_port <= 65535 or self.acm_port == self.udp_port:
                 raise ValueError("acm_port must be 1024..65535 and differ from udp_port")
         return self
+
+    @property
+    def reorder_s(self):
+        """Effective RX reorder delay: resent packets (ACM downshift) are put back in order."""
+        if self.rx_reorder_s is None:
+            return 0.3 if self.acm else 0.0
+        return float(self.rx_reorder_s)
+
+    @property
+    def video_adaptive(self):
+        """Effective adaptive-video switch (default: on whenever ACM is on)."""
+        return bool(self.acm) if self.adaptive_video is None else bool(self.adaptive_video)
 
     def to_dict(self):
         return asdict(self)

@@ -192,6 +192,164 @@ def test_radio_feedback_packet():
     assert abs(msg["snr"] - 17.25) < 1e-4
 
 
+def test_acm_resend_on_downshift():
+    """TX: after an ACM downshift the packets of the last loop delay are sent again, first."""
+    import time
+    from ofdm321.acm import AcmController
+    from ofdm321.blocks import MimoTxSource
+    from ofdm321.config import Settings
+    from ofdm321.protocol import DATA, pack_packet, unpack_packet
+    s = Settings(acm=True, mimo_mode="siso", acm_resend_s=0.2)
+    ctl = AcmController("qpsk,16qam")
+    ctl.index = 1                                                  # 16qam: 4 packets per frame
+    src = MimoTxSource(s, 5, acm=ctl)
+    sent = []
+    src.mod.frame = lambda pk, m: (sent.append((m, [unpack_packet(p)[2] for p in pk if p[5] == DATA])),
+                                   np.zeros((2, 3760), np.complex64))[1]
+    for i in range(12):
+        src.packets.put(pack_packet(DATA, 5, i, bytes(188)))
+    src._next_acm_frame()
+    src._next_acm_frame()                                          # 16qam frames: 0-3, 4-7
+    ctl.index = 0                                                  # fade reported: down to qpsk
+    src._next_acm_frame()
+    src._next_acm_frame()
+    src._next_acm_frame()
+    assert [x[1] for x in sent] == [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1], [2, 3], [4, 5]], sent
+    assert src.snapshot()["acm_resent_packets"] == 8
+    time.sleep(0.25)                                               # older than the window: no resend
+    ctl.index = 1
+    src._next_acm_frame()
+    time.sleep(0.25)
+    ctl.index = 0
+    src._next_acm_frame()
+    assert src.snapshot()["acm_resend_events"] == 1
+
+
+def test_rx_reorder_buffer():
+    """A packet of the next RS group overtakes resent packets: lost without the reorder buffer."""
+    import tempfile
+    import time
+    from pathlib import Path
+    import pmt
+    from ofdm321.blocks import VideoReceiver
+    from ofdm321.fec_rs import encode_parity
+    from ofdm321.protocol import DATA, END, RS8_PARITY, pack_packet, rs_parity_stamp
+    rng = np.random.default_rng(5)
+    pay = [rng.integers(0, 256, 188, dtype=np.uint8).tobytes() for _ in range(16)]
+    pk = {i: pack_packet(DATA, 9, i, pay[i]) for i in range(16)}
+    for g in (0, 8):
+        for i, par in enumerate(encode_parity(pay[g:g + 8], 8)):
+            pk[("p", g, i)] = pack_packet(RS8_PARITY, 9, g, par, rs_parity_stamp(8, i, 8))
+    # air order: 0-2 ok, then the fade: 3-7 + parity lost, but DATA 8 gets through; then the resend
+    order = [0, 1, 2, 8] + [3, 4, 5, 6, 7] + [("p", 0, i) for i in range(8)] + \
+            list(range(8, 16)) + [("p", 8, i) for i in range(8)]
+    results = {}
+    for reorder in (0.0, 0.05):
+        with tempfile.TemporaryDirectory() as d:
+            vr = VideoReceiver(9, Path(d) / "v.ts", 0, reorder_s=reorder)
+            for k in order + ["end"]:
+                raw = pack_packet(END, 9, 16) if k == "end" else pk[k]
+                vr.handle(pmt.cons(pmt.PMT_NIL, pmt.init_u8vector(len(raw), list(raw))))
+            time.sleep(0.06)
+            vr.poll()
+            vr.close()
+            results[reorder] = (vr.snapshot()["missing_data_packets"], (Path(d) / "v.ts").read_bytes())
+    assert results[0.0][0] > 0                                     # group 0 closed too early
+    assert results[0.05] == (0, b"".join(pay))                    # in order again: complete video
+
+
+def _ts(pid, cc, payload=True, keyframe=False):
+    """Synthetic 188-byte TS packet (PUSI + random access indicator for a keyframe)."""
+    afc = (1 if payload else 0) | (2 if keyframe or not payload else 0)
+    head = bytes([0x47, (0x40 if keyframe else 0) | pid >> 8, pid & 0xFF, afc << 4 | cc])
+    af = bytes([1, 0x40 if keyframe else 0]) if afc & 2 else b""
+    return head + af + bytes(188 - 4 - len(af))
+
+
+def test_ts_splice_helpers():
+    from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
+    assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))
+    assert ts_pid(_ts(4096, 0)) == 4096
+    cc = ContinuityRewriter()
+    # rendition A: video cc 0,1,2 ; switch to rendition B whose counters are elsewhere (9, 10)
+    seq = [_ts(256, 0, keyframe=True), _ts(256, 1), _ts(256, 2), _ts(256, 9, keyframe=True), _ts(256, 10),
+           _ts(256, 10, payload=False), _ts(0x1FFF, 7)]
+    out = [cc(p) for p in seq]
+    assert [p[3] & 15 for p in out[:6]] == [0, 1, 2, 3, 4, 4]      # payload +1, adaptation-only repeats
+    assert out[6] == seq[6]                                         # null packets untouched
+    assert all(len(p) == 188 and p[:3] == q[:3] for p, q in zip(out, seq))
+
+
+def test_video_rate_policy():
+    from ofdm321.config import Settings
+    from ofdm321.video_adapt import VideoRatePolicy, video_ladder
+    s = Settings(acm=True)
+    lad = video_ladder(s, {"bpsk": 200e3, "qpsk": 400e3, "16qam": 800e3, "64qam": 1200e3})
+    assert [mux for _, mux, _ in lad] == [150000, 300000, 600000, 900000]
+    assert all(vb < mux for _, mux, vb in lad)
+    p = VideoRatePolicy(["bpsk", "qpsk", "16qam", "64qam"], hold_s=5)
+    assert p.decide(2, "qpsk", 0.0) == (1, "down")                 # down at once
+    assert p.decide(1, "64qam", 4.9) == (1, None)                  # up only after 5 s stable
+    assert p.decide(1, "64qam", 5.0) == (3, "up")
+    assert p.decide(2, "16qam", 99) == (2, None)
+
+
+def test_adaptive_encoder_splices_cleanly():
+    """Real FFmpeg ladder, 6 s: up and down switches, DATA numbering and the spliced TS stay valid."""
+    import shutil
+    import subprocess
+    import tempfile
+    import threading
+    import time
+    from pathlib import Path
+    from ofdm321.config import Settings
+    from ofdm321.protocol import DATA, END, unpack_packet
+    from ofdm321.video_adapt import AdaptiveEncoder, video_ladder
+    if shutil.which("ffmpeg") is None:
+        print("  (skipped: no ffmpeg)")
+        return
+
+    class Src:
+        def __init__(self):
+            self.pk = []
+
+        def enqueue(self, raw, stop):
+            self.pk.append(raw)
+            return True
+
+    class Ctl:                                                     # ACM: qpsk, 64qam from 1 s, bpsk from 4 s
+        def __init__(self):
+            self.t0 = time.monotonic()
+
+        def _now(self):
+            t = time.monotonic() - self.t0
+            return (0, "qpsk") if t < 1 else (1, "64qam") if t < 4 else (4, "bpsk")
+
+        modulation = property(lambda self: self._now()[1])
+        mod_since = property(lambda self: self.t0 + self._now()[0])
+
+    s = Settings(acm=True)
+    lad = video_ladder(s, {"bpsk": 200e3, "qpsk": 400e3, "16qam": 800e3, "64qam": 1200e3})
+    with tempfile.TemporaryDirectory() as d:
+        src = Src()
+        enc = AdaptiveEncoder(s, "testpattern", None, 6, src, 77, Path(d), threading.Event(), Ctl(), lad,
+                              hold_s=1.5)
+        enc.start()
+        enc.done.wait(30)
+        assert enc.error is None, enc.error
+        assert [h["reason"] for h in enc.history] == ["start", "up", "down"], enc.history
+        assert [h["modulation"] for h in enc.history] == ["qpsk", "64qam", "bpsk"]
+        seqs = [unpack_packet(r)[2] for r in src.pk if r[5] == DATA]
+        assert seqs == list(range(len(seqs))) and sum(r[5] == END for r in src.pk) == 12
+        out = subprocess.run(["ffmpeg", "-v", "warning", "-i", str(Path(d) / "video_tx.ts"), "-f", "null", "-"],
+                             capture_output=True, text=True)
+        assert out.returncode == 0 and not out.stderr.strip(), out.stderr
+        n = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                            "stream=nb_read_frames", "-of", "csv=p=0", str(Path(d) / "video_tx.ts")],
+                           capture_output=True, text=True).stdout.strip()
+        assert int(n.split()[0]) == 6 * s.fps, n
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

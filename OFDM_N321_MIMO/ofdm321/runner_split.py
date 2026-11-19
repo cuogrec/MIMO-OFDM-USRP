@@ -96,9 +96,16 @@ def main_tx(argv=None):
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
     p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RX2 B (RF1) gain (60)")
+    p.add_argument("--acm-resend", dest="acm_resend_s", type=float,
+                   help="ACM: on a downshift resend the packets of the last max(S, 1.5 x loop) s (0.1, 0 = off)")
+    p.add_argument("--adaptive-video", dest="adaptive_video", action="store_const", const=True,
+                   help="video bitrate follows the ACM modulation (default with --acm)")
+    p.add_argument("--no-adaptive-video", dest="adaptive_video", action="store_const", const=False,
+                   help="ACM with the fixed video bitrate of config (ts_muxrate)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain"])
+    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain",
+                          "adaptive_video", "acm_resend_s"])
     require_ffmpeg()
     run_dir = new_run("tx", s, a.mode, a.name)
     session = secrets.randbits(32)
@@ -109,9 +116,17 @@ def main_tx(argv=None):
     LOG.info("TX session=%d mimo=%s mod=%s interleaver=%s Fs=%.3g f=%.6g MHz, TS capacity %.0f kb/s",
              session, s.mimo_mode, "ACM " + s.acm_modcods if s.acm else s.modulation, s.interleaver,
              s.sample_rate, s.frequency / 1e6, cap["ts_capacity_bps_after_rs8_8"] / 1e3)
+    ladder = None
     if s.acm:
-        LOG.info("ACM TS capacity per modulation (kb/s): %s | video TS mux %d kb/s",
-                 {m: round(v / 1e3) for m, v in cap["acm_ts_capacity_bps"].items()}, s.ts_muxrate // 1000)
+        LOG.info("ACM TS capacity per modulation (kb/s): %s",
+                 {m: round(v / 1e3) for m, v in cap["acm_ts_capacity_bps"].items()})
+        if s.video_adaptive:
+            from .video_adapt import video_ladder
+            ladder = video_ladder(s, cap["acm_ts_capacity_bps"])
+            LOG.info("Adaptive video (%.0f%% of capacity, up after %.0f s stable): %s", 100 * s.adaptive_video_fill,
+                     s.adaptive_video_hold_s, ", ".join(f"{m} TS {mux // 1000} kb/s" for m, mux, _ in ladder))
+        else:
+            LOG.info("Fixed video TS mux %d kb/s (--no-adaptive-video)", s.ts_muxrate // 1000)
     ctl = fb = fbh = fbrx = None
     radio_fb = s.acm and s.fb_link == "radio"
     stop = threading.Event()
@@ -202,7 +217,11 @@ def main_tx(argv=None):
         t_end = time.monotonic() + a.warmup
         while time.monotonic() < t_end and not stop.is_set():
             time.sleep(0.2)
-        enc = Encoder(encoder_command(s, a.source, a.input, a.seconds), src, session, run_dir, stop)
+        if ladder:
+            from .video_adapt import AdaptiveEncoder
+            enc = AdaptiveEncoder(s, a.source, a.input, a.seconds, src, session, run_dir, stop, ctl, ladder)
+        else:
+            enc = Encoder(encoder_command(s, a.source, a.input, a.seconds), src, session, run_dir, stop)
         enc.start()
         while not stop.is_set() and not enc.done.is_set():
             time.sleep(1)
@@ -213,10 +232,15 @@ def main_tx(argv=None):
                 LOG.info("TX gain %.1f dB (profile)", g)
             t = src.snapshot()
             if s.acm:
-                LOG.info("TX data %d | queue %d | frames %d | ACM %s (RX SNR_eff %s dB, %d switches, loop %s s)",
-                         t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"], t["acm_modulation"],
+                LOG.info("TX data %d | queue %d | frames %d | ACM %s (RX SNR_eff %s dB, %d switches, loop %s s, "
+                         "resent %d)", t["tx_enqueued_data"], t["tx_queue"], t["tx_frames"], t["acm_modulation"],
                          None if t["acm_snr_db"] is None else round(t["acm_snr_db"], 1), t["acm_switches"],
-                         round(ctl.latency[-1], 2) if ctl.latency else None)
+                         round(ctl.latency[-1], 2) if ctl.latency else None, t["acm_resent_packets"])
+                if ladder:
+                    v = enc.snapshot()
+                    if v["level"] is not None:
+                        LOG.info("   video %s level: TS %d kb/s, backlog %.2f s, %d switches", v["modulation"],
+                                 v["ts_muxrate"] // 1000, v["backlog_s"], v["switches"])
                 if fbh is not None:
                     fr = fbrx.snapshot()
                     LOG.info("   radio feedback: %d frames (%d used), link SNR %s dB, lost %d",
@@ -240,6 +264,14 @@ def main_tx(argv=None):
             if fbh is not None:
                 report["acm"]["radio_feedback"] = {"frames": fbh.frames, "used": fbh.used, "foreign": fbh.foreign,
                                                    "rx": fbrx.snapshot()}
+        if ladder:
+            report["video"] = {"adaptive": True, "fill": s.adaptive_video_fill, "hold_s": s.adaptive_video_hold_s,
+                               "ladder": [{"modulation": m, "ts_muxrate": mux, "video_bitrate": vb}
+                                          for m, mux, vb in ladder],
+                               "switches": enc.switches, "backlog_max_s": round(enc.backlog_max_s, 2),
+                               "history": enc.history}
+        else:
+            report["video"] = {"adaptive": False, "ts_muxrate": s.ts_muxrate, "video_bitrate": s.video_bitrate}
         report.update(tx=src.snapshot(), encoder_error=enc.error, video_tx_bytes=ts.stat().st_size,
                       video_tx_sha256=sha256_file(ts), video_tx_frames=ffprobe_frames(ts))
         if not enc.error and ts.stat().st_size > 0 and not stop.is_set():
@@ -280,6 +312,8 @@ def main_rx(argv=None):
     p.add_argument("--fb-delay", dest="acm_fb_delay_s", type=float,
                    help="ACM: extra feedback delay in s (0.25-0.5 emulates a GEO satellite)")
     p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: TX/RX B (RF1) gain (30)")
+    p.add_argument("--reorder", dest="rx_reorder_s", type=float,
+                   help="reorder buffer before RS8+8 in s (default 0.3 with --acm, 0 = off)")
     p.add_argument("--fb-snr", dest="sim_fb_snr_db", type=float, help="SIM: SNR of the feedback link (20)")
     p.add_argument("--rf-link", choices=("antenna", "cable"), default="antenna",
                    help="radio feedback transmitter: antenna (gain <= 30) or cable (+ --attenuation-db)")
@@ -288,7 +322,7 @@ def main_rx(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
                                 "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s",
-                                "fb_tx_gain", "sim_fb_snr_db"])
+                                "fb_tx_gain", "sim_fb_snr_db", "rx_reorder_s"])
     run_dir = new_run("rx", s, a.mode, a.name)
     report = {"version": __version__, "role": "rx", "mode": a.mode, "settings": s.to_dict(),
               "capacity": capacity(s), "started": datetime.now().isoformat(), "status": "FAIL"}
@@ -305,7 +339,7 @@ def main_rx(argv=None):
             app = ensure_app()               # QApplication must exist before any QT sink
         tb = gr.top_block("N321 MIMO RX", catch_exceptions=True)
         rx = MimoRxSink(s)
-        vr = VideoReceiver(a.session, run_dir / "video_rx.ts", s.udp_port)
+        vr = VideoReceiver(a.session, run_dir / "video_rx.ts", s.udp_port, reorder_s=s.reorder_s)
         keep = [rx, vr]
         if radio_fb:
             from .acm import FeedbackReporter
@@ -375,7 +409,7 @@ def main_rx(argv=None):
             from .acm import FeedbackSender
             fbs = FeedbackSender(rx, vr, s.acm_host, s.acm_port, delay_s=s.acm_fb_delay_s)
             fbs.start()
-            LOG.info("ACM: feedback -> %s:%d every 0.1 s (extra delay %.2f s)", s.acm_host, s.acm_port,
+            LOG.info("ACM: feedback -> %s:%d every %.2f s (extra delay %.2f s)", s.acm_host, s.acm_port, fbs.period,
                      s.acm_fb_delay_s)
         if a.play:
             player = subprocess.Popen(["ffplay", "-hide_banner", "-loglevel", "warning", "-fflags",
@@ -391,6 +425,7 @@ def main_rx(argv=None):
 
         def tick():
             """One monitor step (every second). Returns False when the RX should stop."""
+            vr.poll()
             r, v = rx.snapshot(), vr.snapshot()
             line = ("RX ok %d (soft %d) sig %d rs %d crc %d lost %d | session %s DATA %d missing %d END %s | "
                     "SNR %s EVM %s cond %s dB | rx_rms %.4f" % (

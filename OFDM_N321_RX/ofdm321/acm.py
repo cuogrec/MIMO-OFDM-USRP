@@ -47,6 +47,7 @@ class AcmController:
         self.last_switch = 0.0
         self.confirmed = True   # RX already reports frames of the current modulation
         self.latency = deque(maxlen=50)   # s: switch -> first RX report in the new modulation
+        self.mod_since = time.monotonic()  # when the current modulation was chosen (video bitrate hold)
 
     @property
     def modulation(self):
@@ -55,6 +56,7 @@ class AcmController:
                 if self.index:
                     LOG.warning("ACM: no feedback for %.1f s -> %s", self.timeout, self.modcods[0])
                     self.index, self.switches = 0, self.switches + 1
+                    self.mod_since = time.monotonic()
                 self.last_report = None
             return self.modcods[self.index]
 
@@ -93,6 +95,7 @@ class AcmController:
             if self.index != old:
                 self.switches += 1
                 self.last_switch = now
+                self.mod_since = now
                 self.confirmed = False
                 LOG.info("ACM: SNR_eff %.1f dB -> %s", snr_db, self.modcods[self.index])
             if self.index != old or not self.history or now - self.history[-1][0] >= 0.1:
@@ -218,7 +221,7 @@ class FeedbackSender(threading.Thread):
     """RX side: every `period` s sends the filtered SNR_eff and codeword error rate.
     delay_s emulates the return path latency (e.g. 0.5 s for a GEO satellite)."""
 
-    def __init__(self, rx_sink, video, host, port, period=0.1, delay_s=0.0):
+    def __init__(self, rx_sink, video, host, port, period=0.02, delay_s=0.0):
         super().__init__(daemon=True, name="ACM feedback TX")
         self.reporter = FeedbackReporter(rx_sink, video, delay_s)
         self.dest, self.period = (host, port), period
