@@ -451,7 +451,7 @@ blocks:
     clock_source5: ''
     clock_source6: ''
     clock_source7: ''
-    comment: 'N321 #1: TX/RX A:0 + B:0'
+    comment: 'N321 #1: RF0 TX/RX (A:0) + RF1 TX/RX (B:0)'
     dev_addr: tx_args
     dev_args: ''''''
     gain0: tx_gain

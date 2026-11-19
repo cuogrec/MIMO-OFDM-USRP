@@ -30,7 +30,7 @@ Nếu không tìm thấy, khối vẫn hiện đúng cổng nhưng có tên `[TH
 | [E3] Video PDU receiver | Embedded | `blocks.VideoReceiver` | Tự bám session của máy phát (`session=0`), RS8+8 có kiểm chứng, ghi `video_rx.ts` và gửi UDP 5002 cho ffplay |
 | [E4] 2×2 channel simulator | Embedded, tắt sẵn | `blocks.MimoChannelSim` | Mô phỏng kênh 2×2 Rayleigh, SNR 20 dB, CFO 2 kHz |
 | [E5] SFO resampler | Embedded, tắt sẵn | `blocks.SfoResampler` | Mô phỏng lệch clock 5 ppm giữa hai máy |
-| QT GUI Frequency Sink | Có sẵn | — | Phổ thu tại RX2 A và RX2 B |
+| QT GUI Frequency Sink | Có sẵn | — | Phổ thu tại RF0 RX2 và RF1 RX2 (kênh A, B) |
 | PDU to Tagged Stream → QT GUI Constellation Sink | Có sẵn | cổng `const` của `blocks.MimoRxSink` | **Chòm sao** ký hiệu dữ liệu sau cân bằng (MRC/SFBC/MMSE), 1 khung tốt mỗi 8 khung (`const_every`) |
 
 Các khối OFDM có sẵn của GNU Radio (`ofdm_tx/rx`, `header_payload_demux`…) chỉ hỗ trợ một anten, nên toàn bộ

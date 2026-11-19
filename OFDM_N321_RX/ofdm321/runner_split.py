@@ -1,7 +1,8 @@
 """Two N321 (or two processes): role 'tx' or 'rx'. Each role opens only its own radio.
 
-TX: FFmpeg -> DATA/RS8_PARITY/END -> MIMO OFDM (2 channels) -> N321 #1 (TX/RX A:0, B:0)
-RX: N321 #2 (RX2 A:0, B:0) -> MIMO OFDM RX -> verified RS8+8 -> video_rx.ts + UDP -> ffplay
+TX: FFmpeg -> DATA/RS8_PARITY/END -> MIMO OFDM (2 channels) -> N321 #1 (RF0 TX/RX, RF1 TX/RX)
+RX: N321 #2 (RF0 RX2, RF1 RX2) -> MIMO OFDM RX -> verified RS8+8 -> video_rx.ts + UDP -> ffplay
+Port names follow the N321 front panel: RF0 = UHD channel 0 (A:0), RF1 = channel 1 (B:0).
 --mode sim replaces the air link with ZeroMQ (TX PUSH -> RX PULL) plus, at the RX,
 a sample-clock offset, a 2x2 channel, noise and CFO: the same impairments as two
 separate radios with independent clocks.
@@ -37,7 +38,7 @@ def common_args(p):
                    help="adaptive modulation: TX picks BPSK..64QAM per frame from RX feedback (both sides)")
     p.add_argument("--acm-port", dest="acm_port", type=int, help="UDP port of the feedback channel (5003)")
     p.add_argument("--fb-link", dest="fb_link", choices=("udp", "radio"),
-                   help="ACM feedback path: udp (network, default) or radio (channel B of both N321, --mimo siso)")
+                   help="ACM feedback path: udp (network, default) or radio (RF1 of both N321, --mimo siso)")
     p.add_argument("--fb-freq", dest="fb_freq", type=float, help="radio feedback carrier (default 922.7e6)")
     p.add_argument("--fb-rate", dest="fb_rate", type=float, help="radio feedback sample rate (default 500e3)")
     p.add_argument("--rate", dest="sample_rate", type=float)
@@ -95,7 +96,7 @@ def main_tx(argv=None):
     p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
-    p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RX2 B (RF1) gain (60)")
+    p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RF1 RX2 gain (60)")
     p.add_argument("--acm-resend", dest="acm_resend_s", type=float,
                    help="ACM: on a downshift resend the packets of the last max(S, 1.5 x loop) s (0.1, 0 = off)")
     p.add_argument("--adaptive-video", dest="adaptive_video", action="store_const", const=True,
@@ -127,6 +128,9 @@ def main_tx(argv=None):
                      s.adaptive_video_hold_s, ", ".join(f"{m} TS {mux // 1000} kb/s" for m, mux, _ in ladder))
         else:
             LOG.info("Fixed video TS mux %d kb/s (--no-adaptive-video)", s.ts_muxrate // 1000)
+    from .hardware import antenna_summary
+    report["antennas"] = antenna_summary(s, "tx")
+    LOG.info("Cắm anten (máy phát%s): %s", "" if a.mode == "rf" else ", mô phỏng", report["antennas"])
     ctl = fb = fbh = fbrx = None
     radio_fb = s.acm and s.fb_link == "radio"
     stop = threading.Event()
@@ -142,8 +146,8 @@ def main_tx(argv=None):
                 fbh = RadioFeedbackHandler(ctl, session)
                 fbrx = MimoRxSink(feedback_rx_settings(s))
                 fbrx.on_packet = fbh
-                LOG.info("ACM: radio feedback on %.4g MHz (RX2 B), %.3g S/s (starts with %s)",
-                         s.fb_freq / 1e6, s.fb_rate, ctl.modulation)
+                LOG.info("ACM: radio feedback on %.4g MHz (RF1 RX2, gain %.0f dB), %.3g S/s (starts with %s)",
+                         s.fb_freq / 1e6, s.fb_rx_gain, s.fb_rate, ctl.modulation)
             else:
                 fb = FeedbackReceiver(ctl, s.acm_port, session)
                 fb.start()
@@ -156,15 +160,15 @@ def main_tx(argv=None):
                                    validate_rf)
             report["notes"] = validate_rf(s, a.rf_link, a.attenuation_db)
             if radio_fb:
-                # channel A transmits the video, channel B (RX2) receives the feedback
+                # RF0 TX/RX transmits the video, RF1 RX2 receives the feedback
                 tx_chans = 1
                 usrp = make_stream(s, "tx", [0])
                 fusrp = make_stream(s, "rx", [1])
                 report["hardware"] = configure_streams([
                     {"dev": usrp, "kind": "tx", "n": 1, "freq": s.frequency, "gain": s.tx_gain,
-                     "antenna": s.tx_antenna, "rate": s.sample_rate, "name": "video_tx_A"},
+                     "antenna": s.tx_antenna, "rate": s.sample_rate, "name": "video_tx_RF0", "chans": [0]},
                     {"dev": fusrp, "kind": "rx", "n": 1, "freq": s.fb_freq, "gain": s.fb_rx_gain,
-                     "antenna": "RX2", "rate": s.fb_rate, "name": "feedback_rx_B"}], s)
+                     "antenna": "RX2", "rate": s.fb_rate, "name": "feedback_rx_RF1", "chans": [1]}], s)
                 nul_tx, nul_rx = blocks.null_sink(gr.sizeof_gr_complex), blocks.null_source(gr.sizeof_gr_complex)
                 tb.connect((src, 0), (usrp, 0))
                 tb.connect((src, 1), nul_tx)
@@ -356,7 +360,7 @@ def main_rx(argv=None):
     p.add_argument("--acm-host", dest="acm_host", help="ACM: IP of the TX PC (default 127.0.0.1)")
     p.add_argument("--fb-delay", dest="acm_fb_delay_s", type=float,
                    help="ACM: extra feedback delay in s (0.25-0.5 emulates a GEO satellite)")
-    p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: TX/RX B (RF1) gain (30)")
+    p.add_argument("--fb-tx-gain", dest="fb_tx_gain", type=float, help="radio feedback: RF1 TX/RX gain (30)")
     p.add_argument("--reorder", dest="rx_reorder_s", type=float,
                    help="reorder buffer before RS8+8 in s (default 0.3 with --acm, 0 = off)")
     p.add_argument("--fb-snr", dest="sim_fb_snr_db", type=float, help="SIM: SNR of the feedback link (20)")
@@ -378,6 +382,9 @@ def main_rx(argv=None):
     ch_sim = None
     fbsrc = None
     radio_fb = s.acm and s.fb_link == "radio"
+    from .hardware import antenna_summary
+    report["antennas"] = antenna_summary(s, "rx")
+    LOG.info("Cắm anten (máy thu%s): %s", "" if a.mode == "rf" else ", mô phỏng", report["antennas"])
     try:
         if a.gui:
             from .rxgui import RxGui, ensure_app
@@ -396,15 +403,15 @@ def main_rx(argv=None):
             from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
                                    validate_tx_gain)
             if radio_fb:
-                # channel A (RX2) receives the video, channel B (TX/RX) transmits the feedback
+                # RF0 RX2 receives the video, RF1 TX/RX transmits the feedback
                 validate_tx_gain(s.fb_tx_gain, a.rf_link, a.attenuation_db)
                 usrp = make_stream(s, "rx", [0])
                 fusrp = make_stream(s, "tx", [1])
                 report["hardware"] = configure_streams([
                     {"dev": usrp, "kind": "rx", "n": 1, "freq": s.frequency, "gain": s.rx_gain,
-                     "antenna": s.rx_antenna, "rate": s.sample_rate, "name": "video_rx_A"},
+                     "antenna": s.rx_antenna, "rate": s.sample_rate, "name": "video_rx_RF0", "chans": [0]},
                     {"dev": fusrp, "kind": "tx", "n": 1, "freq": s.fb_freq, "gain": s.fb_tx_gain,
-                     "antenna": "TX/RX", "rate": s.fb_rate, "name": "feedback_tx_B"}], s)
+                     "antenna": "TX/RX", "rate": s.fb_rate, "name": "feedback_tx_RF1", "chans": [1]}], s)
                 nul = blocks.null_source(gr.sizeof_gr_complex)
                 tb.connect((usrp, 0), (rx, 0))
                 tb.connect(nul, (rx, 1))
@@ -448,7 +455,7 @@ def main_rx(argv=None):
         tb.start()
         fbs = None
         if radio_fb:
-            LOG.info("ACM: radio feedback on %.4g MHz (TX/RX B, gain %.0f dB), %.3g S/s",
+            LOG.info("ACM: radio feedback on %.4g MHz (RF1 TX/RX, gain %.0f dB), %.3g S/s",
                      s.fb_freq / 1e6, s.fb_tx_gain, s.fb_rate)
         elif s.acm:
             from .acm import FeedbackSender

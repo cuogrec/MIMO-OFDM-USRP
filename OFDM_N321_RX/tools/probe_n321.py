@@ -3,7 +3,7 @@
 
     python3 tools/probe_n321.py [--addr 192.168.20.2] [--stream]
 
---stream also runs UHD benchmark_rate RX-only on both channels (no TX) to check
+--stream also runs UHD benchmark_rate RX-only on both channels (RF0, RF1; no TX) to check
 for overflows at the project sample rate. Everything is written to runs/probe_<time>/.
 """
 import argparse

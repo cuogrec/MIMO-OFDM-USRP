@@ -269,6 +269,42 @@ def test_feedback_watchdog():
     assert w2.check(1, 12) == "ok" and w2.warnings == 0
 
 
+def test_port_labels_in_hardware_report():
+    """report.hardware names ports like the N321 front panel (RF0 TX/RX, RF1 RX2); fake UHD device."""
+    from ofdm321.config import Settings
+    from ofdm321.hardware import antenna_summary, configure_direction, configure_streams
+
+    class Dev:
+        def __init__(self, n):
+            self.f, self.g, self.ant = [0.0] * n, [0.0] * n, [""] * n
+        set_clock_source = set_time_source = set_subdev_spec = set_time_now = set_start_time = \
+            lambda self, *a: None
+        def set_samp_rate(self, r): self.r = r
+        def get_samp_rate(self): return self.r
+        def set_center_freq(self, tr, ch): self.f[ch] = tr.target_freq
+        def get_center_freq(self, ch): return self.f[ch]
+        def set_gain(self, g, ch): self.g[ch] = g
+        def get_gain(self, ch): return self.g[ch]
+        def set_antenna(self, a, ch): self.ant[ch] = a
+        def get_antenna(self, ch): return self.ant[ch]
+        def get_sensor_names(self, ch): return []
+        def get_usrp_info(self, ch): return {}
+        def get_clock_rate(self, ch): return 200e6
+
+    s = Settings(mimo_mode="siso", acm=True, fb_link="radio", frequency=921e6).validate()
+    rep = configure_streams([
+        {"dev": Dev(1), "kind": "rx", "n": 1, "freq": 921e6, "gain": 50, "antenna": "RX2", "rate": 1e6,
+         "name": "video_rx_RF0", "chans": [0]},
+        {"dev": Dev(1), "kind": "tx", "n": 1, "freq": 922.7e6, "gain": 30, "antenna": "TX/RX", "rate": 5e5,
+         "name": "feedback_tx_RF1", "chans": [1]}], s)
+    assert rep["video_rx_RF0"]["channels"][0]["port"] == "RF0 RX2"
+    assert rep["feedback_tx_RF1"]["channels"][0]["port"] == "RF1 TX/RX"
+    rep = configure_direction(Dev(2), Settings(), "tx")
+    assert [c["port"] for c in rep["channels"]] == ["RF0 TX/RX", "RF1 TX/RX"]
+    assert antenna_summary(s, "rx") == "RF0 RX2 thu video 921.000 MHz | RF1 TX/RX phát phản hồi 922.700 MHz"
+    assert antenna_summary(Settings(), "tx").startswith("RF0 TX/RX + RF1 TX/RX")
+
+
 def _ts(pid, cc, payload=True, keyframe=False):
     """Synthetic 188-byte TS packet (PUSI + random access indicator for a keyframe)."""
     afc = (1 if payload else 0) | (2 if keyframe or not payload else 0)

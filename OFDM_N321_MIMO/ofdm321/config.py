@@ -37,14 +37,14 @@ class Settings:
     acm_resend_s: float = 0.1        # TX: on an ACM downshift resend packets of the last max(this, 1.5 x loop) s (0 = off)
     rx_reorder_s: float | None = None  # RX: reorder buffer before RS8+8 (None = 0.3 s with acm, else off)
     acm_fb_delay_s: float = 0.0      # RX: extra feedback delay (0.5 ~ GEO satellite round trip)
-    fb_link: str = "udp"             # ACM feedback path: udp (network) | radio (N321 channel B, SISO only)
-    fb_freq: float = 922.7e6         # radio feedback carrier (RX machine TX/RX B -> TX machine RX2 B)
+    fb_link: str = "udp"             # ACM feedback path: udp (network) | radio (N321 RF1 = channel B, SISO only)
+    fb_freq: float = 922.7e6         # radio feedback carrier (RX machine RF1 TX/RX -> TX machine RF1 RX2)
     fb_rate: float = 500e3           # radio feedback sample rate (MCR / even integer); CFO range +-fb_rate/64
     adaptive_video: bool | None = None  # TX: video bitrate follows the ACM modulation (None = on with acm)
     adaptive_video_fill: float = 0.75   # TX: TS mux rate = this share of the TS capacity of each modulation
     adaptive_video_hold_s: float = 5.0  # TX: a higher modulation must be stable this long before the video steps up
-    fb_tx_gain: float = 30.0         # RX machine, TX/RX B = RF1 (antenna: <= 30)
-    fb_rx_gain: float = 60.0         # TX machine, RX2 B = RF1
+    fb_tx_gain: float = 30.0         # RX machine, RF1 TX/RX (antenna: <= 30)
+    fb_rx_gain: float = 60.0         # TX machine, RF1 RX2
     fb_zmq_addr: str = "tcp://127.0.0.1:5561"   # simulation: feedback link (RX PUSH -> TX PULL)
     sim_fb_snr_db: float = 20.0      # simulation: SNR of the feedback link
     # --- N321 ------------------------------------------------------------
@@ -131,7 +131,7 @@ class Settings:
             if not self.acm:
                 raise ValueError("fb_link radio is the ACM feedback path: add --acm")
             if self.mimo_mode != "siso":
-                raise ValueError("fb_link radio uses channel B of both N321: only --mimo siso")
+                raise ValueError("fb_link radio uses RF1 (channel B) of both N321: only --mimo siso")
             d = mcr / self.fb_rate
             if abs(d - round(d)) > 1e-9 or round(d) % 2 or not 2 <= round(d) <= 1024:
                 raise ValueError(f"fb_rate must be MCR/N with an even N in 2..1024 (MCR={mcr:g})")

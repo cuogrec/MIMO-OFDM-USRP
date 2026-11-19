@@ -3,7 +3,7 @@
 Constellation: equalised data symbols (after MRC / Alamouti / MMSE, CPE removed, before
 de-mapping) of one good frame every `const_every` frames, taken from the MimoRxSink
 message port "const" -> pdu_to_tagged_stream -> QT GUI Constellation Sink.
-Spectrum: raw IQ of RX ch A and ch B (QT GUI Frequency Sink, 2 traces).
+Spectrum: raw IQ of RF0 RX2 and RF1 RX2 (QT GUI Frequency Sink, 2 traces; front-panel port names).
 
 Needs a desktop session (DISPLAY). Everything else in the receiver is unchanged.
 """
@@ -50,13 +50,15 @@ class RxGui:
         tb.connect(self.p2s, self.const)
 
         self.freq = qtgui.freq_sink_c(1024, window.WIN_BLACKMAN_hARRIS, s.frequency, s.sample_rate,
-                                      "Phổ thu RX A / RX B", 2, None)
+                                      "Phổ thu RF0 / RF1", 2, None)
         self.freq.set_update_time(0.20)
         self.freq.set_y_axis(-120, -20)
         self.freq.enable_grid(True)
         self.freq.enable_autoscale(False)
         self.freq.set_fft_average(0.2)
-        for i, (lab, col) in enumerate((("RX A", "blue"), ("RX B", "red"))):
+        radio_fb = bool(getattr(s, "acm", False)) and getattr(s, "fb_link", "udp") == "radio"
+        labels = (f"RF0 {s.rx_antenna}", "RF1 TX/RX (phát phản hồi)" if radio_fb else f"RF1 {s.rx_antenna}")
+        for i, (lab, col) in enumerate(zip(labels, ("blue", "red"))):
             self.freq.set_line_label(i, lab)
             self.freq.set_line_color(i, col)
         for i, ep in enumerate(iq):

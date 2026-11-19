@@ -715,9 +715,9 @@ blocks:
     grid: 'False'
     gui_hint: 0,0,1,1
     label: Relative Gain
-    label1: '''RX2 A'''
+    label1: '''RF0 RX2'''
     label10: ''''''
-    label2: '''RX2 B'''
+    label2: '''RF1 RX2'''
     label3: ''''''
     label4: ''''''
     label5: ''''''
@@ -728,7 +728,7 @@ blocks:
     legend: 'True'
     maxoutbuf: '0'
     minoutbuf: '0'
-    name: "'Ph\u1ED5 thu N321 #2: RX2 A / RX2 B'"
+    name: "'Ph\u1ED5 thu N321 #2: RF0 RX2 / RF1 RX2'"
     nconnections: '2'
     norm_window: 'False'
     showports: 'False'
@@ -938,7 +938,7 @@ blocks:
     clock_source5: ''
     clock_source6: ''
     clock_source7: ''
-    comment: 'N321 #1: TX/RX A:0 + B:0'
+    comment: 'N321 #1: RF0 TX/RX (A:0) + RF1 TX/RX (B:0)'
     dev_addr: tx_args
     dev_args: ''''''
     gain0: tx_gain
@@ -1215,7 +1215,7 @@ blocks:
     clock_source5: ''
     clock_source6: ''
     clock_source7: ''
-    comment: 'N321 #2: RX2 A:0 + B:0'
+    comment: 'N321 #2: RF0 RX2 (A:0) + RF1 RX2 (B:0)'
     dc_offs0: 0+0j
     dc_offs1: 0+0j
     dc_offs10: 0+0j

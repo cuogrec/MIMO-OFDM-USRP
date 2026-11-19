@@ -166,6 +166,9 @@ def main(argv=None):
     if s.ts_muxrate > 0.85 * cap["ts_capacity_bps_after_rs8_8"]:
         LOG.warning("ts_muxrate %d > 85%% of link TS capacity %.0f b/s: video will lag",
                     s.ts_muxrate, cap["ts_capacity_bps_after_rs8_8"])
+    from .hardware import antenna_summary
+    report["antennas"] = antenna_summary(s, "loopback")
+    LOG.info("Cắm anten/cáp (loopback%s): %s", "" if a.mode == "rf" else ", mô phỏng", report["antennas"])
     LOG.info("mode=%s mimo=%s mod=%s Fs=%.3g frame=%d samples, TS capacity %.0f kb/s",
              a.mode, s.mimo_mode, s.modulation, s.sample_rate, cap["frame_samples"],
              cap["ts_capacity_bps_after_rs8_8"] / 1e3)

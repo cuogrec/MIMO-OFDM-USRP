@@ -494,7 +494,7 @@ blocks:
     legend: 'True'
     maxoutbuf: '0'
     minoutbuf: '0'
-    name: "'Ph\u1ED5 RX2 A (xanh) / B (\u0111\u1ECF)'"
+    name: "'Ph\u1ED5 RF0 RX2 (xanh) / RF1 RX2 (\u0111\u1ECF)'"
     nconnections: '2'
     norm_window: 'False'
     showports: 'False'
@@ -685,7 +685,7 @@ blocks:
     clock_source5: ''
     clock_source6: ''
     clock_source7: ''
-    comment: N321 TX/RX A:0 + B:0
+    comment: N321 RF0 TX/RX (A:0) + RF1 TX/RX (B:0)
     dev_addr: device_args
     dev_args: ''''''
     gain0: tx_gain
@@ -962,7 +962,7 @@ blocks:
     clock_source5: ''
     clock_source6: ''
     clock_source7: ''
-    comment: N321 RX2 A:0 + B:0
+    comment: N321 RF0 RX2 (A:0) + RF1 RX2 (B:0)
     dc_offs0: 0+0j
     dc_offs1: 0+0j
     dc_offs10: 0+0j

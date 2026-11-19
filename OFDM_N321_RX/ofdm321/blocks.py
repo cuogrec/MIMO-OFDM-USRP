@@ -332,7 +332,7 @@ class MimoRxSink(gr.sync_block):
 
 class FeedbackRadioSource(gr.sync_block):
     """RX machine, radio feedback (--fb-link radio): continuous SISO BPSK OFDM frames on
-    N321 #2 channel B (TX/RX B), each carrying the latest ACM report (acm.FeedbackReporter).
+    N321 #2 port RF1 TX/RX (channel B:0), each carrying the latest ACM report (acm.FeedbackReporter).
     About 133 frames/s at 500 kS/s: the TX sees a fresh report every ~7.5 ms."""
 
     def __init__(self, settings, provider, throttle=False):

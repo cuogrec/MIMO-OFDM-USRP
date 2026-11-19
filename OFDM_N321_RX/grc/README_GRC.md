@@ -14,7 +14,7 @@ gnuradio-companion ~/Desktop/MIMO-OFDM-USRP-main/OFDM_N321_RX/grc/ofdm_n321_rx.g
 | UHD: USRP Source | Có sẵn | N321 #2 `192.168.180.95`, `A:0 B:0`, cổng RX2, gain 35 |
 | [E2] MIMO OFDM RX | Embedded (`ofdm321.blocks.MimoRxSink`) | Đồng bộ Schmidl-Cox, bù CFO và lệch clock, ước lượng H 2×2, cân bằng MRC/SFBC/MMSE, de-interleave, giải mềm RS, kiểm tra CRC32, xuất PDU |
 | [E3] Video PDU receiver | Embedded (`ofdm321.blocks.VideoReceiver`) | Tự bám session của máy phát, RS8+8 có kiểm chứng, ghi `rx_ts_path` và gửi UDP 5002 |
-| QT GUI Frequency Sink | Có sẵn | Phổ thu tại RX2 A và RX2 B (cột trái cửa sổ) |
+| QT GUI Frequency Sink | Có sẵn | Phổ thu tại RF0 RX2 và RF1 RX2 (kênh A, B) (cột trái cửa sổ) |
 | PDU to Tagged Stream → QT GUI Constellation Sink | Có sẵn | **Chòm sao sau cân bằng** (cột phải): lấy từ cổng `const` của [E2], 1 khung tốt mỗi `const_every` = 8 khung |
 | ZMQ PULL + Deinterleave | Có sẵn, **tắt sẵn** | Mô phỏng: nhận mẫu từ máy phát |
 | [E5] SFO resampler, [E4] kênh 2×2 | Embedded, **tắt sẵn** | Mô phỏng hai máy độc lập: lệch clock 5 ppm, CFO 2 kHz, kênh Rayleigh 20 dB |
