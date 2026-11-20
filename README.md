@@ -1,5 +1,7 @@
 # MIMO-OFDM-USRP
 
+[![CI](https://github.com/cuogrec/MIMO-OFDM-USRP/actions/workflows/ci.yml/badge.svg)](https://github.com/cuogrec/MIMO-OFDM-USRP/actions/workflows/ci.yml)
+
 Truyền video thời gian thực bằng **OFDM 2×2 MIMO** trên **USRP N321**, viết bằng Python, GNU Radio 3.10 và UHD 4.6.
 Hệ thống kế thừa tầng video, đóng gói và FEC của dự án OFDM video trên USRP N210.
 

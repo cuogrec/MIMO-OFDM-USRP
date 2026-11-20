@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-sim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GNU Radio, numpy, FFmpeg (apt; no USRP needed)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gnuradio python3-numpy python3-matplotlib python3-pip python3-setuptools ffmpeg
+          /usr/bin/python3 -c "import gnuradio.gr as g, numpy; print('GNU Radio', g.version(), 'numpy', numpy.__version__)"
+
+      - name: Install the shared ofdm321 package (editable)
+        run: |
+          /usr/bin/python3 -m pip install --user --break-system-packages --no-build-isolation -e .
+          /usr/bin/python3 -c "import ofdm321; print('ofdm321', ofdm321.__version__)"
+
+      - name: Unit tests (tests/test_modem.py)
+        run: /usr/bin/python3 tests/test_modem.py
+
+      - name: Two-process simulation, 10 s video at 400 kS/s (must be SIM_RX_VERIFIED)
+        run: bash tools/ci_sim.sh 10 --rate 400e3
+
+      - name: Keep the simulation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-reports
+          path: |
+            OFDM_N321_RX/runs/*_ci/report.json
+            OFDM_N321_TX/runs/*_ci/report.json
+          if-no-files-found: ignore

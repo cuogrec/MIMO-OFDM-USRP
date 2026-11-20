@@ -271,6 +271,11 @@ def test_feedback_watchdog():
 
 def test_port_labels_in_hardware_report():
     """report.hardware names ports like the N321 front panel (RF0 TX/RX, RF1 RX2); fake UHD device."""
+    try:
+        from gnuradio import uhd  # noqa: F401  (tune_request / time_spec are used with the fake device)
+    except ImportError:
+        print("  (skipped: gnuradio.uhd not installed)")
+        return
     from ofdm321.config import Settings
     from ofdm321.hardware import antenna_summary, configure_direction, configure_streams
 
@@ -303,6 +308,22 @@ def test_port_labels_in_hardware_report():
     assert [c["port"] for c in rep["channels"]] == ["RF0 TX/RX", "RF1 TX/RX"]
     assert antenna_summary(s, "rx") == "RF0 RX2 thu video 921.000 MHz | RF1 TX/RX phát phản hồi 922.700 MHz"
     assert antenna_summary(Settings(), "tx").startswith("RF0 TX/RX + RF1 TX/RX")
+
+
+def test_report_uses_medians_while_receiving():
+    """report rx_rms / snr_db / evm_db = medians of the seconds with decoded frames, *_final = at stop."""
+    from ofdm321.runner_split import apply_run_medians
+    hist = [{"ok": 0, "rx_rms": 0.0003, "snr_db": None, "evm_db": None, "snr_eff_db": None},     # before TX
+            {"ok": 400, "rx_rms": 0.020, "snr_db": 24.0, "evm_db": -20.0, "snr_eff_db": 23.0},
+            {"ok": 900, "rx_rms": 0.022, "snr_db": 26.0, "evm_db": -22.0, "snr_eff_db": 25.0},
+            {"ok": 1400, "rx_rms": 0.021, "snr_db": 25.0, "evm_db": -21.0, "snr_eff_db": 24.0},
+            {"ok": 1400, "rx_rms": 0.0003, "snr_db": 25.0, "evm_db": -21.0, "snr_eff_db": 24.0}]  # TX ended
+    r = apply_run_medians({"rx_rms": 0.0003, "snr_db": 3.0, "evm_db": -2.0, "ok": 1400}, hist)
+    assert (r["rx_rms"], r["snr_db"], r["evm_db"]) == (0.021, 25.0, -21.0), r
+    assert (r["rx_rms_final"], r["snr_db_final"], r["evm_db_final"]) == (0.0003, 3.0, -2.0)
+    assert r["median_during_run"]["seconds"] == 3 and r["median_during_run"]["snr_eff_db"] == 24.0
+    r = apply_run_medians({"rx_rms": 0.0001, "snr_db": None, "evm_db": None}, hist[:1])   # nothing decoded
+    assert r["rx_rms"] == 0.0001 and r["median_during_run"]["seconds"] == 0
 
 
 def _ts(pid, cc, payload=True, keyframe=False):

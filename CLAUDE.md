@@ -77,7 +77,8 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 18 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 19 tests (~1 min, needs ffmpeg), must all PASS before committing
+bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -96,6 +97,9 @@ python3 tools/plot_run.py <TX report.json> <RX report.json>     # plot_run.png i
 
 Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq` (and `--fb-freq`, `--fb-rate`).
 Success = RX prints `RF_RX_VERIFIED` / `SIM_RX_VERIFIED` (video SHA-256 identical).
+
+RX report: `rx.rx_rms` / `snr_db` / `evm_db` = medians over seconds with decoded frames (`median_during_run`);
+`*_final` = value at stop (often after the TX ended).
 
 Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` small; `lost` ~0;
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.

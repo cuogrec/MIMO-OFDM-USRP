@@ -101,7 +101,13 @@ def main(argv=None):
         if pts:
             ax_snr.plot(*zip(*pts), "--", label="SNR đường phản hồi radio")
     ax_snr.set_ylabel("dB")
-    ax_snr.set_title("SNR")
+    med = (rx or {}).get("rx", {}).get("median_during_run")
+    if med and med.get("seconds"):
+        f = lambda v, n=1: "–" if v is None else f"{v:.{n}f}"
+        ax_snr.set_title(f"SNR (trung vị {med['seconds']} s có khung: SNR {f(med['snr_db'])} dB, EVM "
+                         f"{f(med['evm_db'])} dB, rx_rms {f(med['rx_rms'], 4)})")
+    else:
+        ax_snr.set_title("SNR")
     ax_snr.grid(True, alpha=0.3)
     ax_snr.legend(loc="lower left", fontsize=8)
 

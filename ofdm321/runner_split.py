@@ -67,6 +67,35 @@ def new_run(role, s, mode, name):
     return run_dir
 
 
+def run_medians(history):
+    """Medians of rx_rms / snr_db / evm_db / snr_eff_db over the seconds of `history` (RX rows) in which
+    frames were decoded (the `ok` counter grew). The values at stop time are often taken after the TX
+    has ended (noise only), so the report uses these medians instead."""
+    from statistics import median
+    rows, prev = [], 0
+    for h in history:
+        if h.get("ok") is not None and h["ok"] > prev:
+            rows.append(h)
+        prev = h.get("ok") or prev
+    out = {"seconds": len(rows)}
+    for k in ("rx_rms", "snr_db", "evm_db", "snr_eff_db"):
+        vals = [h[k] for h in rows if h.get(k) is not None]
+        out[k] = round(median(vals), 6 if k == "rx_rms" else 2) if vals else None
+    return out
+
+
+def apply_run_medians(rx_snapshot, history):
+    """report["rx"]: rx_rms / snr_db / evm_db = medians while frames were decoded; *_final = at stop."""
+    r = dict(rx_snapshot)
+    med = run_medians(history)
+    for k in ("rx_rms", "snr_db", "evm_db"):
+        r[k + "_final"] = r.get(k)
+        if med[k] is not None:
+            r[k] = med[k]
+    r["median_during_run"] = med
+    return r
+
+
 def ffprobe_frames(path):
     try:
         out = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
@@ -544,7 +573,7 @@ def main_rx(argv=None):
         if rx.last_const is not None:              # last constellation snapshot, for offline plots
             import numpy as np
             np.save(run_dir / "const_last.npy", rx.last_const)
-        report.update(rx=r, video=v, video_rx_bytes=ts.stat().st_size,
+        report.update(rx=apply_run_medians(r, history), video=v, video_rx_bytes=ts.stat().st_size,
                       video_rx_sha256=sha256_file(ts) if ts.stat().st_size else None, video_rx_frames=info)
         if a.compare:
             from pathlib import Path
