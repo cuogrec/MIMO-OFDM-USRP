@@ -46,7 +46,9 @@ class Settings:
     modulation: str = "qpsk"         # qpsk | 16qam
     sample_rate: float = 1_000_000
     frame_gap_samples: int = 80
-    sync_threshold: float = 0.60
+    sync_threshold: float = 0.35     # RX: Schmidl-Cox threshold (v0.5: 0.60; LTF fine timing refines the start)
+    fine_timing: bool = True         # RX: refine the frame start with the known LTF (v0.6)
+    sig_recover: bool = True         # RX: decode a frame whose SIG CRC fails with the known mode (v0.6)
     tx_rms: float = 0.10             # per TX channel, digital fc32 full scale = 1.0
     interleaver: str = "block"       # TX: none | block | carrier (RX follows the SIG field)
     soft_decoding: bool = True       # RX: reliability-ranked erasure decoding of RS(248,216)
@@ -141,8 +143,8 @@ class Settings:
             raise ValueError("tx_rms must be in (0, 0.3] to keep OFDM peaks below DAC full scale")
         if self.fec_mode != "rs8_8":
             raise ValueError("Only verified outer RS8+8 is supported")
-        if not 0.3 <= self.sync_threshold <= 0.95:
-            raise ValueError("sync_threshold must be in [0.3, 0.95]")
+        if not 0.2 <= self.sync_threshold <= 0.95:
+            raise ValueError("sync_threshold must be in [0.2, 0.95]")
         if self.clock_source not in ("internal", "external", "gpsdo") or \
                 self.time_source not in ("internal", "external", "gpsdo"):
             raise ValueError("clock/time source must be internal, external or gpsdo")

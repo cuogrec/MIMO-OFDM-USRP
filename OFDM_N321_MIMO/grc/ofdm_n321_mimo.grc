@@ -319,7 +319,7 @@ blocks:
             \ import l\u1ED7i:\", exc)\n    return _missing(\"MIMO RX\", [np.complex64,\
             \ np.complex64], None, (), (\"pdus\",))\n\n\nclass blk(_base()):\n   \
             \ \"\"\"MIMO OFDM RX.\"\"\"\n\n    def __init__(self, mimo_mode=\"alamouti\"\
-            , modulation=\"qpsk\", sample_rate=1000000,\n                 sync_threshold=0.6):\n\
+            , modulation=\"qpsk\", sample_rate=1000000,\n                 sync_threshold=0.35):\n\
             \        super().__init__(_settings(mimo_mode=mimo_mode, modulation=modulation,\n\
             \                                   sample_rate=float(sample_rate), sync_threshold=float(sync_threshold)))\n\
             \n    def stop(self):\n        if hasattr(self, \"snapshot\"):\n     \
@@ -332,10 +332,10 @@ blocks:
         minoutbuf: '0'
         modulation: modulation
         sample_rate: samp_rate
-        sync_threshold: '0.6'
+        sync_threshold: '0.35'
     states:
         _io_cache: ('MIMO OFDM RX', 'blk', [('mimo_mode', "'alamouti'"), ('modulation',
-            "'qpsk'"), ('sample_rate', '1000000'), ('sync_threshold', '0.6')], [('0',
+            "'qpsk'"), ('sample_rate', '1000000'), ('sync_threshold', '0.35')], [('0',
             'complex', 1), ('1', 'complex', 1)], [('pdus', 'message', 1)], 'MIMO OFDM
             RX.', [])
         bus_sink: false

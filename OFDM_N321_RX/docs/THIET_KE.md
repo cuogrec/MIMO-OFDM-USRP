@@ -73,12 +73,44 @@ VideoReceiver ◄─PDU (đã qua CRC)─ MimoRxSink ◄══2 luồng══ UH
 |---|---|---|
 | STF | 1 | Chỉ dùng sóng mang chẵn, nên tín hiệu tuần hoàn chu kỳ 32 mẫu (Schmidl-Cox). TX1 phát bản dịch vòng 4 mẫu (CSD) để hai anten không triệt tiêu nhau |
 | LTF | 2 | Ma trận P: TX0 phát [L, L], TX1 phát [L, −L]. Từ đó có H(k) cho từng cặp TX–RX và từng sóng mang; nhiễu đo trên các bin rỗng |
-| SIG | 1 | 48 bit BPSK: magic 0xA5, mode, điều chế, số thứ tự khung, CRC16. Khi có 2 TX thì mã SFBC. Khung có SIG sai bị bỏ, giống vai trò header gate ở bản N210 |
+| SIG | 1 | 48 bit BPSK: magic 0xA5, mode, điều chế, số thứ tự khung, CRC16. Khi có 2 TX thì mã SFBC. Khung có SIG sai được giải thử với cấu hình đã biết (v0.6, mục 5.1); không qua RS + CRC32 thì bị bỏ |
 | DATA | Np | Một từ mã 248 B (212 B ứng dụng + CRC32 + RS 32 B), đã scramble; 4 pilot mỗi symbol |
 | gap | 80 mẫu | Toàn số 0 |
 
 Mỗi symbol gồm 16 mẫu CP + 64 mẫu FFT. Pilot của hai anten đều đã biết trước: bộ thu dự đoán pilot qua H
 rồi bù pha chung (CPE) cho từng symbol. Cách này xử lý cả CFO dư lẫn trôi pha.
+
+### 5.1 Dò khung, định thời và SIG ở SNR thấp (v0.6)
+
+Đo bằng `tools/link_budget.py` (kết quả trong `results/stage_breakdown.*`): ở v0.5, ngưỡng FER 1% của BPSK
+gần bằng QPSK (siso AWGN 9,4 so với 10,0 dB), dù riêng đường dữ liệu (lượt "genie": biết trước thời điểm
+và SIG) cho BPSK 5,5 dB. Nguyên nhân nằm ở khâu dò khung, không phải ở dữ liệu:
+
+- Schmidl-Cox với ngưỡng 0,6 cần khoảng 9 dB mới dò được 99 % khung. Ở chế độ siso, nó còn cộng nhiễu của
+  đầu vào RX1 (không dùng) vào phép đo.
+- Thời điểm lấy theo tâm plateau: ở SNR thấp thường lệch quá vùng không ISI (−10..+3 mẫu).
+- SIG là 48 bit BPSK không mã hóa, chỉ có CRC16, nên hỏng sớm hơn dữ liệu đã có RS khoảng 2 dB.
+
+Cách sửa của v0.6 (định dạng khung giữ nguyên; bên phát không đổi):
+
+1. `find()` chỉ dùng các anten mà chế độ dùng (siso: RX0) và ngưỡng hạ xuống 0,35 (`sync_threshold`).
+   Báo động giả khi chỉ có nhiễu ở 1 MS/s: khoảng 2 lần/s ở siso, 0 ở 2 anten. Mỗi báo động giả chỉ tốn một lần
+   giải SIG.
+2. Định thời tinh bằng tương quan với LTF đã biết (2 symbol LTF, (w1 + w2) và (w1 − w2) gom cả hai TX),
+   tìm trong ±24 mẫu quanh ước lượng thô. Chọn đường đến sớm nhất có ít nhất 30 % đỉnh, không nhất thiết là
+   đường mạnh nhất. Lỗi định thời về 0 ở mọi SNR đo.
+3. Cứu khung khi SIG hỏng (`sig_recover`): bên thu đã biết mode, điều chế (cấu hình) và interleaver hoặc điều chế ACM
+   của SIG đúng gần nhất. Vì vậy nó vẫn giải payload, và chỉ giữ gói khi RS và CRC32 đều đúng. Bên thu v0.6 vẫn
+   đọc khung của bên phát v0.5 (không đổi gì ở bên phát).
+
+| siso, FER 1 % (dB) | v0.5 BPSK | v0.5 QPSK | v0.6 BPSK | v0.6 QPSK | genie BPSK / QPSK |
+|---|---|---|---|---|---|
+| AWGN, khung cố định | 9,4 | 10,0 | **5,8** | 9,7 | 5,5 / 9,6 |
+| kênh cố định, khung cố định | 6,1 | 7,1 | **3,1** | 7,2 | 2,9 / 7,1 |
+| AWGN, khung ACM | 9,4 | 10,0 | **5,7** | 10,0 | 5,5 / 9,9 |
+
+`start_rx.sh --legacy-sync` quay về bộ thu v0.5 (ngưỡng 0,6, không định thời LTF, không cứu SIG) để so sánh
+trên RF. Log RX đếm số khung được cứu (`sig_recovered` trong report).
 
 ## 6. Các chế độ MIMO
 

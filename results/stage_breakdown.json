@@ -1,0 +1,258 @@
+{
+ "v0.5/fixed/awgn/siso/bpsk": {
+  "fer": 9.4,
+  "genie_fer": 5.5,
+  "miss": 9.1,
+  "timing_err": 9.7,
+  "sig_crc_err": 9.2,
+  "sig_err": 9.2
+ },
+ "v0.5/fixed/awgn/siso/qpsk": {
+  "fer": 10.0,
+  "genie_fer": 9.9,
+  "miss": 9.0,
+  "timing_err": 9.8,
+  "sig_crc_err": 9.1,
+  "sig_err": 9.1
+ },
+ "v0.5/fixed/awgn/alamouti/bpsk": {
+  "fer": 10.0,
+  "genie_fer": 7.9,
+  "miss": 9.1,
+  "timing_err": 9.5,
+  "sig_crc_err": 10.0,
+  "sig_err": 10.0
+ },
+ "v0.5/fixed/awgn/alamouti/qpsk": {
+  "fer": 10.9,
+  "genie_fer": 10.2,
+  "miss": 9.1,
+  "timing_err": 9.4,
+  "sig_crc_err": 9.7,
+  "sig_err": 9.7
+ },
+ "v0.5/fixed/fixed/siso/bpsk": {
+  "fer": 6.1,
+  "genie_fer": 3.0,
+  "miss": 5.9,
+  "timing_err": 6.6,
+  "sig_crc_err": 6.0,
+  "sig_err": 6.0
+ },
+ "v0.5/fixed/fixed/siso/qpsk": {
+  "fer": 7.1,
+  "genie_fer": 7.0,
+  "miss": 5.8,
+  "timing_err": 6.3,
+  "sig_crc_err": 6.1,
+  "sig_err": 6.1
+ },
+ "v0.5/fixed/fixed/alamouti/bpsk": {
+  "fer": 6.8,
+  "genie_fer": 5.0,
+  "miss": 6.0,
+  "timing_err": 6.2,
+  "sig_crc_err": 6.8,
+  "sig_err": 6.8
+ },
+ "v0.5/fixed/fixed/alamouti/qpsk": {
+  "fer": 7.9,
+  "genie_fer": 7.5,
+  "miss": 5.8,
+  "timing_err": 6.2,
+  "sig_crc_err": 6.9,
+  "sig_err": 6.9
+ },
+ "v0.5/acm/awgn/siso/bpsk": {
+  "fer": 9.4,
+  "genie_fer": 5.1,
+  "miss": 9.1,
+  "timing_err": 9.6,
+  "sig_crc_err": 8.6,
+  "sig_err": 8.6
+ },
+ "v0.5/acm/awgn/siso/qpsk": {
+  "fer": 10.0,
+  "genie_fer": 9.9,
+  "miss": 9.1,
+  "timing_err": 9.7,
+  "sig_crc_err": 8.7,
+  "sig_err": 8.7
+ },
+ "v0.5/acm/awgn/alamouti/bpsk": {
+  "fer": 9.4,
+  "genie_fer": 7.8,
+  "miss": 9.3,
+  "timing_err": 9.1,
+  "sig_crc_err": 8.2,
+  "sig_err": 8.2
+ },
+ "v0.5/acm/awgn/alamouti/qpsk": {
+  "fer": 11.0,
+  "genie_fer": 10.2,
+  "miss": 9.1,
+  "timing_err": 9.1,
+  "sig_crc_err": 8.1,
+  "sig_err": 8.1
+ },
+ "v0.5/acm/fixed/siso/bpsk": {
+  "fer": 6.0,
+  "genie_fer": 3.0,
+  "miss": 5.9,
+  "timing_err": 6.5,
+  "sig_crc_err": 5.4,
+  "sig_err": 5.4
+ },
+ "v0.5/acm/fixed/siso/qpsk": {
+  "fer": 7.4,
+  "genie_fer": 7.3,
+  "miss": 6.0,
+  "timing_err": 6.4,
+  "sig_crc_err": 5.4,
+  "sig_err": 5.4
+ },
+ "v0.5/acm/fixed/alamouti/bpsk": {
+  "fer": 6.1,
+  "genie_fer": 5.0,
+  "miss": 6.0,
+  "timing_err": 6.3,
+  "sig_crc_err": 5.3,
+  "sig_err": 5.3
+ },
+ "v0.5/acm/fixed/alamouti/qpsk": {
+  "fer": 8.0,
+  "genie_fer": 7.7,
+  "miss": 5.9,
+  "timing_err": 6.1,
+  "sig_crc_err": 5.2,
+  "sig_err": 5.2
+ },
+ "v0.6/fixed/awgn/siso/bpsk": {
+  "fer": 5.8,
+  "genie_fer": 5.5,
+  "miss": 2.9,
+  "timing_err": 0.0,
+  "sig_crc_err": 7.4,
+  "sig_err": 5.6
+ },
+ "v0.6/fixed/awgn/siso/qpsk": {
+  "fer": 9.7,
+  "genie_fer": 9.6,
+  "miss": 2.7,
+  "timing_err": 0.0,
+  "sig_crc_err": 7.5,
+  "sig_err": 7.4
+ },
+ "v0.6/fixed/awgn/alamouti/bpsk": {
+  "fer": 8.1,
+  "genie_fer": 7.8,
+  "miss": 5.5,
+  "timing_err": 0.0,
+  "sig_crc_err": 9.8,
+  "sig_err": 7.8
+ },
+ "v0.6/fixed/awgn/alamouti/qpsk": {
+  "fer": 10.6,
+  "genie_fer": 10.2,
+  "miss": 5.6,
+  "timing_err": 0.3,
+  "sig_crc_err": 9.6,
+  "sig_err": 9.5
+ },
+ "v0.6/fixed/fixed/siso/bpsk": {
+  "fer": 3.1,
+  "genie_fer": 2.9,
+  "miss": 0.0,
+  "timing_err": 0.0,
+  "sig_crc_err": 5.0,
+  "sig_err": 2.8
+ },
+ "v0.6/fixed/fixed/siso/qpsk": {
+  "fer": 7.2,
+  "genie_fer": 7.1,
+  "miss": 0.0,
+  "timing_err": 0.0,
+  "sig_crc_err": 5.3,
+  "sig_err": 5.2
+ },
+ "v0.6/fixed/fixed/alamouti/bpsk": {
+  "fer": 5.1,
+  "genie_fer": 5.1,
+  "miss": 2.4,
+  "timing_err": 0.0,
+  "sig_crc_err": 7.1,
+  "sig_err": 5.0
+ },
+ "v0.6/fixed/fixed/alamouti/qpsk": {
+  "fer": 7.7,
+  "genie_fer": 7.2,
+  "miss": 2.3,
+  "timing_err": 0.0,
+  "sig_crc_err": 7.3,
+  "sig_err": 6.6
+ },
+ "v0.6/acm/awgn/siso/bpsk": {
+  "fer": 5.7,
+  "genie_fer": 5.5,
+  "miss": 2.8,
+  "timing_err": 0.0,
+  "sig_crc_err": 4.9,
+  "sig_err": 4.6
+ },
+ "v0.6/acm/awgn/siso/qpsk": {
+  "fer": 10.0,
+  "genie_fer": 9.9,
+  "miss": 3.0,
+  "timing_err": 0.0,
+  "sig_crc_err": 4.9,
+  "sig_err": 4.9
+ },
+ "v0.6/acm/awgn/alamouti/bpsk": {
+  "fer": 8.0,
+  "genie_fer": 7.6,
+  "miss": 5.6,
+  "timing_err": 0.0,
+  "sig_crc_err": 7.1,
+  "sig_err": 6.9
+ },
+ "v0.6/acm/awgn/alamouti/qpsk": {
+  "fer": 10.9,
+  "genie_fer": 10.2,
+  "miss": 5.6,
+  "timing_err": 0.0,
+  "sig_crc_err": 6.9,
+  "sig_err": 6.9
+ },
+ "v0.6/acm/fixed/siso/bpsk": {
+  "fer": 3.0,
+  "genie_fer": 3.0,
+  "miss": 0.0,
+  "timing_err": 0.0,
+  "sig_crc_err": 2.3,
+  "sig_err": 2.0
+ },
+ "v0.6/acm/fixed/siso/qpsk": {
+  "fer": 7.3,
+  "genie_fer": 7.1,
+  "miss": 0.0,
+  "timing_err": 0.0,
+  "sig_crc_err": 2.0,
+  "sig_err": 2.0
+ },
+ "v0.6/acm/fixed/alamouti/bpsk": {
+  "fer": 5.4,
+  "genie_fer": 5.1,
+  "miss": 2.4,
+  "timing_err": 0.0,
+  "sig_crc_err": 4.5,
+  "sig_err": 4.0
+ },
+ "v0.6/acm/fixed/alamouti/qpsk": {
+  "fer": 8.1,
+  "genie_fer": 7.6,
+  "miss": 2.1,
+  "timing_err": 0.0,
+  "sig_crc_err": 4.4,
+  "sig_err": 4.4
+ }
+}

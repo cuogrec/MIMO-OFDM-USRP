@@ -243,6 +243,11 @@ def bit_reliability(symbols, weight, bps):
     return (out * weight[:, None]).reshape(-1)
 
 
+@lru_cache(maxsize=1)
+def _ltf_body():
+    return ofdm_time(tables()["ltf"])[N_CP:]
+
+
 def ofdm_time(freq):
     """freq: (..., 64) natural bin order -> (..., 80) time samples with CP."""
     t = np.fft.ifft(freq, axis=-1) * np.sqrt(N_FFT) / POWER_NORM
@@ -408,8 +413,10 @@ class Modulator:
 class Demodulator:
     """Stateless per-frame demodulation given the frame start index."""
 
-    def __init__(self, mode, modulation, threshold=0.6, backoff=3, soft=True, soft_cpu=0.3, acm=False):
+    def __init__(self, mode, modulation, threshold=0.35, backoff=3, soft=True, soft_cpu=0.3, acm=False,
+                 fine_timing=True, sig_recover=True):
         self.mode, self.modulation = mode, modulation
+        self.fine_timing, self.sig_recover = fine_timing, sig_recover
         self.acm = acm
         self.soft = soft
         self.soft_cpu = soft_cpu          # max share of wall time spent in erasure trials
@@ -426,6 +433,10 @@ class Demodulator:
         self.const_every = 0              # >0: attach equalised symbols to every N-th good frame
         self.n_code = -(-CODE_BYTES * 8 // self.bps)    # symbols holding one codeword (64QAM: 331)
         self.n_const = 1008 if acm else self.n_code      # points per constellation snapshot
+        self.keep_raw = False             # measurements: info["raw"] = hard-decided codeword bytes
+        # mode byte of the last good SIG (interleaver / ACM modulation), used by sig_recover
+        self.sig_hint = MODE_CODES[mode] << 4 | MOD_CODES[modulation] | (
+            ACM_FLAG if acm else INTERLEAVERS.index("block") << 2)
 
     # -- synchronisation ------------------------------------------------
     def schmidl_cox(self, x):
@@ -443,10 +454,18 @@ class Demodulator:
         M[E2 < 1e-12 * L] = 0
         return M, P
 
-    def find(self, x, start=0):
-        """Return STF start (first CP sample) >= start, or None."""
+    def find(self, x, start=0, stop=None):
+        """Return (STF start = first CP sample >= start, P) or (None, None).
+
+        stop: only metric crossings before this index count (the rest of x is still used to
+        locate the plateau and for the LTF fine timing).
+
+        Only the antennas this mode uses are searched (siso: RX0), so an unused, noise-only input
+        does not dilute the metric. With fine_timing the coarse Schmidl-Cox estimate is refined
+        by cross-correlation with the known LTF (both LTF symbols, both TX antennas)."""
+        x = x[:self.n_rx] if self.fine_timing else x
         M, P = self.schmidl_cox(x)
-        mask = M[start:] > self.threshold
+        mask = M[start:stop] > self.threshold
         if mask.size and mask[0]:
             # plateau already running at the window edge: its start is unknown, skip it
             first_low = np.flatnonzero(~mask)
@@ -463,14 +482,44 @@ class Demodulator:
         peak = seg.max()
         plateau = np.flatnonzero(seg >= 0.9 * peak)
         centre = d0 + int(round(plateau.mean()))
-        return centre - N_CP // 2, P[centre]
+        s0 = centre - N_CP // 2
+        if self.fine_timing:
+            s0 = self._ltf_timing(x, s0, P[centre])
+        return s0, P[centre]
+
+    FINE_RANGE = 24                       # +- samples searched around the coarse start
+
+    def _ltf_timing(self, x, s0, p):
+        """Sample-accurate frame start from the two LTF symbols (falls back to s0 near buffer ends).
+
+        TX0 sends [L, L], TX1 [L, -L]: correlating (w1 + w2) and (w1 - w2) with L collects both
+        antennas. The earliest lag within 8 samples before the peak holding >= 30 % of it is taken
+        (first path, not just the strongest echo)."""
+        R, n = self.FINE_RANGE, x.shape[1]
+        base = s0 + SYM + N_CP                     # coarse first body sample of LTF 1
+        lo, hi = base - R, base + R + SYM + N_FFT
+        if lo < 0 or hi > n:
+            return s0
+        cfo = np.angle(p) / (2 * np.pi * (N_FFT // 2))
+        seg = x[:, lo:hi] * np.exp(-2j * np.pi * cfo * np.arange(lo, hi))
+        idx = np.arange(2 * R + 1)[:, None] + np.arange(N_FFT)[None, :]
+        w1, w2 = seg[:, idx], seg[:, idx + SYM]                     # (nrx, 2R+1, 64)
+        ref = np.conj(_ltf_body())
+        m = np.sum(np.abs((w1 + w2) @ ref) ** 2 + np.abs((w1 - w2) @ ref) ** 2, axis=0)
+        k = int(np.argmax(m))
+        early = np.flatnonzero(m[max(0, k - 8):k + 1] >= 0.3 * m[k])
+        k = max(0, k - 8) + int(early[0])
+        return max(0, s0 + k - R)
 
     # -- frames (batched: K frames per call amortises numpy overhead) ---
     def demodulate(self, x, s0, p_metric=None):
         return self.demodulate_batch(x, [s0], [p_metric])[0]
 
-    def demodulate_batch(self, x, starts, p_metrics):
-        """x: (2, n); starts: frame (STF CP) indices. Returns [(packet|None, info)]."""
+    def demodulate_batch(self, x, starts, p_metrics, known_sig=None):
+        """x: (2, n); starts: frame (STF CP) indices. Returns [(packet|None, info)].
+
+        known_sig (measurements only, tools/link_budget.py): per frame the SIG head the receiver
+        should assume (bytes as decoded: magic, mode byte, seq hi, seq lo) or None -> 'genie' SIG."""
         t = tables()
         K, nsym = len(starts), 4 + self.np
         rx = np.stack([x[:self.n_rx, s0:s0 + self.body_len] for s0 in starts]).astype(complex)
@@ -507,6 +556,19 @@ class Demodulator:
             heads = [sig_bytes[k].tobytes() for k in range(K)]
             valid = [d[0] == SIG_MAGIC and (d[1] & ~INTERLEAVE_MASK) == mode_byte and (d[1] >> 2 & 3) < 3
                      and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0] for d in heads]
+        if known_sig is not None:
+            for k, h in enumerate(known_sig):
+                if h is not None:
+                    heads[k], valid[k] = bytes(h), True
+        # SIG-less recovery: a frame whose SIG fails is still decoded with what the receiver already
+        # knows (mode and modulation from the configuration, the interleaver / ACM modulation of the
+        # last good SIG); the packet is kept only if RS and CRC32 pass. No format change.
+        recovered = [False] * K
+        for k in range(K):
+            if valid[k]:
+                self.sig_hint = heads[k][1]
+            elif self.sig_recover:
+                heads[k], valid[k], recovered[k] = bytes([SIG_MAGIC, self.sig_hint, 0, 0]), True, True
         # payload: equalise, de-interleave (per frame, as its SIG says), decide
         Fd = self._cpe(F[:, :, 4:], H, 1)
         scheme = {"siso": "mrc", "simo": "mrc", "alamouti": "sfbc", "smux": "mmse"}[self.mode]
@@ -521,7 +583,7 @@ class Demodulator:
         weight = weight * derate.reshape((K, self.np) + (1,) * (weight.ndim - 2))
         weight = weight.reshape(K, -1)
         if self.acm:
-            return self._acm_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise)
+            return self._acm_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered)
         for k in range(K):
             perm = self.perms[heads[k][1] >> 2 & 3] if valid[k] else None
             if perm is not None:
@@ -544,9 +606,17 @@ class Demodulator:
             packet, corrected, reason, erasures = decode_codeword(raw[k], rel)
             if rel is not None and (erasures or reason != "ok"):
                 self.soft_budget -= time.perf_counter() - t0
+            if recovered[k]:
+                if packet is None:
+                    results.append((None, {"reason": "sig", "cfo": cfo[k], "seq": None}))
+                    continue
             info = {"reason": reason, "corrected": corrected, "cfo": cfo[k], "soft_erasures": erasures,
                     "interleaver": INTERLEAVERS[d[1] >> 2 & 3],
-                    "seq": struct.unpack(">H", d[2:4])[0]}
+                    "seq": None if recovered[k] else struct.unpack(">H", d[2:4])[0]}
+            if recovered[k]:
+                info["sig_recovered"] = True
+            if self.keep_raw:
+                info["raw"] = raw[k]
             self.count = getattr(self, "count", 0) + 1
             if self.const_every and reason == "ok" and self.count % self.const_every == 0:
                 # constellation after equalisation (smux: both streams), before demapping
@@ -559,7 +629,7 @@ class Demodulator:
             results.append((packet, info))
         return results
 
-    def _acm_decode(self, eq, weight, heads, valid, cfo, snr_eff, H, noise):
+    def _acm_decode(self, eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered):
         """ACM frames: demap with the modulation of each SIG, decode every codeword.
         Returns [(list of packets, info)] per frame."""
         results = []
@@ -592,10 +662,17 @@ class Demodulator:
                 erasures += er
                 if packet is not None:
                     packets.append(packet)
+            if recovered[k] and not packets:
+                results.append((None, {"reason": "sig", "cfo": cfo[k], "seq": None}))
+                continue
             info = {"reason": "ok" if packets else reasons[0], "reasons": reasons, "corrected": corrected,
                     "soft_erasures": erasures, "cfo": cfo[k], "modulation": modulation,
                     "snr_eff_db": float(snr_eff[k]), "interleaver": "none",
-                    "seq": struct.unpack(">H", d[2:4])[0]}
+                    "seq": None if recovered[k] else struct.unpack(">H", d[2:4])[0]}
+            if recovered[k]:
+                info["sig_recovered"] = True
+            if self.keep_raw:
+                info["raw"] = raw
             self.count = getattr(self, "count", 0) + 1
             if self.const_every and packets and self.count % self.const_every == 0:
                 info["const"] = e[:self.n_const].astype(np.complex64)

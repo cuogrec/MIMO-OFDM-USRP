@@ -3,7 +3,7 @@
   "modulation": "qpsk",
   "sample_rate": 1000000,
   "frame_gap_samples": 80,
-  "sync_threshold": 0.6,
+  "sync_threshold": 0.35,
   "tx_rms": 0.1,
   "device_args": "addr=192.168.180.4,master_clock_rate=200e6",
   "subdev": "A:0 B:0",

@@ -13,7 +13,7 @@ trap cleanup EXIT
     --seconds $((SECONDS_TX + 60)) --name ci "$@" > "$LOG/rx.log" 2>&1 &
 RXP=$!
 for _ in $(seq 120); do grep -q "RX listening" "$LOG/rx.log" && break; sleep 0.5; done
-/usr/bin/python3 "$REPO/OFDM_N321_TX/run_tx.py" --mode sim --seconds "$SECONDS_TX" --name ci "$@" > "$LOG/tx.log" 2>&1
+timeout $((SECONDS_TX + 120)) /usr/bin/python3 "$REPO/OFDM_N321_TX/run_tx.py" --mode sim --seconds "$SECONDS_TX" --name ci "$@" > "$LOG/tx.log" 2>&1
 TXRC=$?
 wait "$RXP"; RXRC=$?
 echo "--- TX (exit $TXRC)"; tail -n 3 "$LOG/tx.log"

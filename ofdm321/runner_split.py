@@ -396,9 +396,19 @@ def main_rx(argv=None):
     p.add_argument("--rf-link", choices=("antenna", "cable"), default="antenna",
                    help="radio feedback transmitter: antenna (gain <= 30) or cable (+ --attenuation-db)")
     p.add_argument("--attenuation-db", type=float)
+    p.add_argument("--sync-threshold", dest="sync_threshold", type=float,
+                   help="Schmidl-Cox detection threshold (0.35; v0.5 used 0.6)")
+    p.add_argument("--legacy-sync", action="store_true",
+                   help="v0.5 receiver front end: threshold 0.6, no LTF fine timing, no SIG-less recovery")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
+    if a.legacy_sync:
+        a.fine_timing = a.sig_recover = False
+        a.sync_threshold = a.sync_threshold or 0.6
+    else:
+        a.fine_timing = a.sig_recover = None
+    s = settings_from(a, ["sync_threshold", "fine_timing", "sig_recover",
+                          "rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
                                 "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s",
                                 "fb_tx_gain", "sim_fb_snr_db", "rx_reorder_s"])
     run_dir = new_run("rx", s, a.mode, a.name)

@@ -70,6 +70,20 @@ def tx_power(frame):
     return float(np.sum(np.mean(np.abs(frame[:, 400:]) ** 2, axis=1)))
 
 
+def receive(rx, y):
+    """Like MimoRxSink: detect, decode; a detection whose SIG fails is skipped and the search goes on one
+    symbol later. Returns (packet(s), info) of the first detection that passed SIG, else (None, None)."""
+    start = 0
+    while True:
+        s0, p = rx.find(y, start)
+        if s0 is None or s0 + rx.body_len > y.shape[1]:
+            return None, None
+        (out, info), = rx.demodulate_batch(y, [s0], [p])
+        if info["reason"] != "sig":
+            return out, info
+        start = s0 + 80
+
+
 # ---------------------------------------------------------------- 1. fixed modulation
 def fixed_point(args):
     mimo, mod, channel, soft, snr, frames, seed = args
@@ -83,12 +97,8 @@ def fixed_point(args):
         x = tx.frame(pkt)
         H, H2 = draw_channel(channel, rng)
         y = through(x, H, H2, snr, tx_power(x), rng, rng.uniform(0, 2 * np.pi))
-        s0, p = rx.find(y)
-        if s0 is None:
-            lost += 1
-            missed += 1
-            continue
-        out, info = rx.demodulate(y, s0, p)
+        out, info = receive(rx, y)
+        missed += info is None
         lost += out != pkt
     fl = frame_samples(mimo, mod, GAP)
     cap = RATE / fl * TS_BITS_PER_PACKET / 1e3
@@ -132,16 +142,14 @@ def acm_point(args):
             y = through(x, H, H2, snr, powers[m], rng, phase)
             sent += k
             used[m] += 1
-            s0, p = rx.find(y)
             rx_mod, good = None, 0
-            if s0 is not None:
-                (out, info), = rx.demodulate_batch(y, [s0], [p])
-                if out is not None and "reasons" in info:
-                    good = sum(r == "ok" for r in info["reasons"])
-                    rx_mod = info["modulation"]
-                    x_eff = info["snr_eff_db"]
-                    snr_f = x_eff if snr_f is None else 0.8 * snr_f + 0.2 * x_eff
-                    cw_hist.append((good, k))
+            out, info = receive(rx, y)
+            if out is not None and "reasons" in info:
+                good = sum(r == "ok" for r in info["reasons"])
+                rx_mod = info["modulation"]
+                x_eff = info["snr_eff_db"]
+                snr_f = x_eff if snr_f is None else 0.8 * snr_f + 0.2 * x_eff
+                cw_hist.append((good, k))
             ok += good
             cw_hist = cw_hist[-window:]
             if snr_f is not None and int(round(t / T)) % report_every == 0 and rx_mod is not None:

@@ -12,7 +12,7 @@ import pmt
 from gnuradio import gr
 
 from .config import PACKET_BYTES
-from .modem import Modulator, Demodulator, SYM, N_CP, codewords_per_frame
+from .modem import Modulator, Demodulator, SYM, N_CP, N_FFT, codewords_per_frame
 from .protocol import DATA, IDLE, pack_packet, unpack_packet
 
 LOG = logging.getLogger(__name__)
@@ -178,7 +178,8 @@ class MimoRxSink(gr.sync_block):
         s = settings
         self.acm = bool(getattr(s, "acm", False))
         self.demod = Demodulator(s.mimo_mode, s.modulation, s.sync_threshold, soft=s.soft_decoding,
-                                 acm=self.acm)
+                                 acm=self.acm, fine_timing=bool(getattr(s, "fine_timing", True)),
+                                 sig_recover=bool(getattr(s, "sig_recover", True)))
         self.snr_eff = None                    # filtered effective SNR (ACM feedback)
         self.modulation = None if self.acm else s.modulation
         self.mod_frames = {}
@@ -201,7 +202,7 @@ class MimoRxSink(gr.sync_block):
         self.last_const = None
         self.lock = threading.Lock()
         self.stats = dict(detected=0, ok=0, sig_fail=0, rs_fail=0, crc_fail=0,
-                          corrected_bytes=0, lost_sync=0, soft_decoded=0)
+                          corrected_bytes=0, lost_sync=0, soft_decoded=0, sig_recovered=0)
         self.interleaver = None
         self.snr = self.evm = self.cond = None
         self.rx_rms = 0.0
@@ -258,7 +259,8 @@ class MimoRxSink(gr.sync_block):
         approx = self.expected
         while len(starts) < self.MAX_BATCH and approx + self.frame_len + 2 * SYM <= self.n:
             lo = max(0, approx - SYM // 2)
-            s0, p = self.demod.find(self.buf[:, lo:lo + 2 * SYM + N_CP])
+            # coarse search over 2 symbols; the extra 4 symbols let the LTF fine timing see both LTFs
+            s0, p = self.demod.find(self.buf[:, lo:lo + 6 * SYM + N_CP], stop=2 * SYM + N_CP - N_FFT + 1)
             if s0 is None:
                 break
             starts.append(lo + s0)
@@ -292,6 +294,7 @@ class MimoRxSink(gr.sync_block):
                     self.stats[{"ok": "ok", "sig": "sig_fail", "rs": "rs_fail", "crc": "crc_fail"}[reason]] += 1
                 self.stats["corrected_bytes"] += info.get("corrected", 0)
                 self.stats["soft_decoded"] += bool(info.get("soft_erasures"))
+                self.stats["sig_recovered"] += bool(info.get("sig_recovered"))
                 self.interleaver = info.get("interleaver", self.interleaver)
                 if "snr_db" in info:
                     self.snr, self.evm = info["snr_db"], info["evm_db"]

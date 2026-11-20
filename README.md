@@ -47,6 +47,8 @@ MIMO-OFDM-USRP/
 - **Bitrate video theo ACM (v0.5):** một FFmpeg mã hóa mỗi điều chế một bản (BPSK 150 … 64QAM 900 kb/s TS ở 1 MS/s),
   máy phát chuyển bản tại khung khóa; phát lại khi hạ điều chế + bộ đệm sắp xếp lại ở máy thu; lịch sử mỗi giây
   trong `report.json` và `tools/plot_run.py` để vẽ đồ thị.
+- **Bộ thu nhạy hơn ở SNR thấp (v0.6):** dò khung trên các anten đang dùng, định thời tinh bằng LTF, vẫn giải khung khi SIG
+  hỏng (RS + CRC32 quyết định); BPSK siso AWGN đạt FER 1% ở 5,8 dB thay vì 9,4 dB (`--legacy-sync` = bộ thu cũ).
 - Máy thu có cửa sổ `--gui`: chòm sao sau cân bằng và phổ 2 kênh.
 - Khung OFDM: FFT 64, CP 16, 48 sóng mang dữ liệu + 4 pilot. Mỗi khung có STF (dùng CSD), 2 LTF ma trận P và SIG có CRC16.
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
@@ -87,6 +89,7 @@ Hướng dẫn chi tiết:
 | RF hai N321, SISO + ACM + phản hồi radio, 921/922,7 MHz, fb gain 30/60 (19/11/2026) | `RF_RX_VERIFIED`, 0 gói mất, 16QAM 89% khung, SNR 24 dB, EVM −20 dB; video cố định 260 kb/s nên dư dung lượng |
 | Bitrate theo ACM (v0.5), mô phỏng SNR 30→22→14→22→30 dB, 1 MS/s | UDP (alamouti) và radio (siso): `SIM_RX_VERIFIED`, thiếu 0 gói; TS trung bình 525 kb/s (alamouti) so với 260 kb/s cố định |
 | Bitrate theo ACM trên RF | Chưa chạy |
+| Bộ thu v0.6 ở SNR thấp, mô phỏng (`tools/link_budget.py`) | FER bám giới hạn dữ liệu (genie), chênh ≤ 0,5 dB; BPSK siso AWGN 9,4 → 5,8 dB, kênh cố định 6,1 → 3,1 dB |
 
 ## An toàn RF
 

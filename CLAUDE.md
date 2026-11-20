@@ -1,7 +1,7 @@
 # CLAUDE.md — MIMO-OFDM-USRP
 
 Real-time video over an OFDM link (2x2 MIMO or SISO) between two USRP N321, written in
-Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.5.0.
+Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.0.
 
 **Reply to the user in Vietnamese.** Short, concrete answers; give exact commands to run.
 
@@ -52,7 +52,8 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 
 `ofdm321/` modules (repo root):
 - `modem.py` — OFDM frame (FFT 64, CP 16, 48 data + 4 pilots; STF w/ CSD, 2 P-matrix LTFs, SIG CRC16),
-  Modulator/Demodulator (Schmidl-Cox w/ Cauchy-Schwarz metric, CFO, H 2x2, CPE, MRC/SFBC/MMSE,
+  Modulator/Demodulator (Schmidl-Cox w/ Cauchy-Schwarz metric on the used antennas only, threshold 0.35,
+  v0.6 LTF fine timing + SIG-less recovery (`--legacy-sync` = v0.5 front end), CFO, H 2x2, CPE, MRC/SFBC/MMSE,
   batched numpy), interleavers none/block/carrier, soft errors-and-erasures RS, ACM frames
   (fixed 42 data symbols, 1/2/4/6 codewords for BPSK/QPSK/16QAM/64QAM, repeated 24-bit SIG + CRC8).
 - `inner_rs.py`, `soft_inner_rs.py`, `fec_rs.py`, `verified_fec.py`, `protocol.py` — RS(248,216) inner code,
@@ -77,9 +78,10 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 20 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 23 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
+python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -106,7 +108,7 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-20, v0.5.0)
+## Status (2026-11-20, v0.6.0)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
   EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
@@ -136,6 +138,11 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   13.3 dB vs siso 32.9); ACM +12-16 % over the best fixed modulation on Rayleigh, but ACM thresholds are too
   conservative on AWGN (0.84-0.90 x best fixed); ACM + smux on Rayleigh loses up to 30 % of codewords; soft RS
   shows no measurable gain on these channels. Fixed: fixed-mode 64QAM soft decoding crashed (1984 bits % 6).
+- 2026-11-20 (v0.6, receiver front end): tools/link_budget.py showed BPSK ~ QPSK at low SNR because
+  frame detection (threshold 0.6, unused RX1 noise summed in siso), plateau timing and the uncoded SIG failed
+  before the data did. Fixed without a frame-format change: detection on used antennas, threshold 0.35, LTF
+  fine timing, SIG-less recovery (RS + CRC32 decide). siso AWGN BPSK FER 1 %: 9.4 -> 5.8 dB (genie 5.5), fixed
+  channel 6.1 -> 3.1 dB; QPSK unchanged (~9.7). The RX default.json got only the threshold change committed.
 
 ## Next steps (agreed direction)
 

@@ -367,7 +367,7 @@ blocks:
             \ np.complex64], None, (), (\"pdus\", \"const\"))\n\n\nclass blk(_base()):\n\
             \    \"\"\"MIMO OFDM RX.\"\"\"\n\n    def __init__(self, mimo_mode=\"\
             alamouti\", modulation=\"qpsk\", sample_rate=1000000,\n              \
-            \   sync_threshold=0.6, soft_decoding=True, const_every=8):\n        super().__init__(_settings(mimo_mode=mimo_mode,\
+            \   sync_threshold=0.35, soft_decoding=True, const_every=8):\n        super().__init__(_settings(mimo_mode=mimo_mode,\
             \ modulation=modulation, soft_decoding=bool(soft_decoding),\n        \
             \                           const_every=int(const_every),\n          \
             \                         sample_rate=float(sample_rate), sync_threshold=float(sync_threshold)))\n\
@@ -384,10 +384,10 @@ blocks:
         modulation: modulation
         sample_rate: samp_rate
         soft_decoding: soft_decoding
-        sync_threshold: '0.6'
+        sync_threshold: '0.35'
     states:
         _io_cache: ('MIMO OFDM RX', 'blk', [('mimo_mode', "'alamouti'"), ('modulation',
-            "'qpsk'"), ('sample_rate', '1000000'), ('sync_threshold', '0.6'), ('soft_decoding',
+            "'qpsk'"), ('sample_rate', '1000000'), ('sync_threshold', '0.35'), ('soft_decoding',
             'True'), ('const_every', '8')], [('0', 'complex', 1), ('1', 'complex',
             1)], [('const', 'message', 1), ('pdus', 'message', 1)], 'MIMO OFDM RX.',
             [])

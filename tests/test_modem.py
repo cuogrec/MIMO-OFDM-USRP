@@ -350,6 +350,68 @@ def _ts(pid, cc, payload=True, keyframe=False):
     return head + af + bytes(188 - 4 - len(af))
 
 
+def test_ltf_fine_timing_and_unused_antenna():
+    """v0.6 front end: exact frame start from the LTF; siso ignores a noise-only RX1 input."""
+    rng = np.random.default_rng(21)
+    H2 = 0.15 * np.array([[1, -1j], [0.5j, 1]])
+    for mode in ("siso", "alamouti", "smux"):
+        tx, rx = Modulator(mode, "qpsk"), Demodulator(mode, "qpsk")
+        for _ in range(5):
+            y = channel(tx.frame(bytes(212)), np.eye(2), 20, rng, cfo=2e-4, H2=H2)
+            s0, _ = rx.find(y)
+            assert s0 == 300, (mode, s0)
+    # siso at 5 dB: TX0 reaches RX0 only (H = I); v0.5 summed the noise of RX1 into the metric
+    tx = Modulator("siso", "bpsk")
+    found = {}
+    for name, kw in (("v0.5", dict(threshold=0.6, fine_timing=False, sig_recover=False)), ("v0.6", {})):
+        rx, r, n = Demodulator("siso", "bpsk", **kw), np.random.default_rng(22), 0
+        for _ in range(60):
+            y = channel(tx.frame(bytes(212)), np.eye(2), 5, r)
+            s0, _ = rx.find(y)
+            n += s0 is not None and -10 <= s0 - 300 <= 3
+        found[name] = n
+    assert found["v0.6"] >= 59 and found["v0.5"] < 50, found
+
+
+def test_sig_recovery_keeps_packets_when_sig_fails():
+    """A destroyed SIG symbol: v0.6 still delivers the packet (RS + CRC32 check it), v0.5 drops it."""
+    rng = np.random.default_rng(23)
+    for acm in (False, True):
+        for mode in ("siso", "alamouti"):
+            tx = Modulator(mode, "qpsk", acm=acm)
+            new, old = Demodulator(mode, "qpsk", acm=acm), Demodulator(
+                mode, "qpsk", acm=acm, threshold=0.6, fine_timing=False, sig_recover=False)
+            for i in range(3):
+                pk = [rng.integers(0, 256, 212, dtype=np.uint8).tobytes() for _ in range(2 if acm else 1)]
+                x = tx.frame(pk if acm else pk[0]).astype(complex)
+                if i:                                       # frame 0 teaches the receiver the SIG
+                    x[:, 3 * SYM:4 * SYM] = 0               # SIG symbol blanked: only noise left
+                y = channel(x, np.eye(2), 30, rng)
+                (out, info), = new.demodulate_batch(y, [new.find(y)[0]], [None])
+                assert (out if acm else [out]) == pk, (acm, mode, i, info)
+                assert bool(info.get("sig_recovered")) == bool(i), info
+                (out, info), = old.demodulate_batch(y, [old.find(y)[0]], [None])
+                assert (out is None and info["reason"] == "sig") if i else out is not None, info
+    # noise only: recovery must not invent packets
+    rx = Demodulator("siso", "qpsk")
+    y = (rng.standard_normal((2, 4000)) + 1j * rng.standard_normal((2, 4000))) * 0.1
+    (out, info), = rx.demodulate_batch(y, [200], [None])
+    assert out is None and info["reason"] == "sig"
+
+
+def test_bpsk_threshold_separates_from_qpsk():
+    """At 3.5 dB here (6.5 dB in tools/link_budget.py terms: this helper averages the power over both
+    TX rows) BPSK frames must get through and QPSK must not: the front end no longer limits BPSK
+    (v0.5: FER 1% at 9.6 / 10.0 dB, i.e. both failed)."""
+    lost = {}
+    for mod in ("bpsk", "qpsk"):
+        rng = np.random.default_rng(24)
+        bad = sum(not run("siso", mod, np.eye(2), 3.5, rng)[0] for _ in range(60))
+        lost[mod] = bad
+    assert lost["bpsk"] <= 1 and lost["qpsk"] >= 30, lost
+    print("  siso AWGN 3.5 dB, 60 frames lost:", lost)
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))
