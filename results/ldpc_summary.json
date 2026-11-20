@@ -1,0 +1,584 @@
+{
+ "snr_fer1pct": {
+  "awgn/siso/bpsk/rs": 5.5,
+  "awgn/siso/bpsk/ldpc1/2": 2.4,
+  "awgn/siso/bpsk/ldpc2/3": 2.5,
+  "awgn/siso/bpsk/ldpc3/4": 2.6,
+  "awgn/siso/bpsk/ldpc5/6": 4.1,
+  "awgn/siso/qpsk/rs": 9.9,
+  "awgn/siso/qpsk/ldpc1/2": 4.2,
+  "awgn/siso/qpsk/ldpc2/3": 6.1,
+  "awgn/siso/qpsk/ldpc3/4": 6.4,
+  "awgn/siso/qpsk/ldpc5/6": 7.5,
+  "awgn/siso/16qam/rs": 16.2,
+  "awgn/siso/16qam/ldpc1/2": 8.5,
+  "awgn/siso/16qam/ldpc2/3": 10.5,
+  "awgn/siso/16qam/ldpc3/4": 12.2,
+  "awgn/siso/16qam/ldpc5/6": 12.6,
+  "awgn/siso/64qam/rs": 22.1,
+  "awgn/siso/64qam/ldpc1/2": 12.4,
+  "awgn/siso/64qam/ldpc2/3": 15.9,
+  "awgn/siso/64qam/ldpc3/4": 17.3,
+  "awgn/siso/64qam/ldpc5/6": 18.3,
+  "awgn/alamouti/bpsk/rs": 8.0,
+  "awgn/alamouti/bpsk/ldpc1/2": 5.2,
+  "awgn/alamouti/bpsk/ldpc2/3": 5.7,
+  "awgn/alamouti/bpsk/ldpc3/4": 5.9,
+  "awgn/alamouti/bpsk/ldpc5/6": 6.2,
+  "awgn/alamouti/qpsk/rs": 10.5,
+  "awgn/alamouti/qpsk/ldpc1/2": 6.0,
+  "awgn/alamouti/qpsk/ldpc2/3": 7.5,
+  "awgn/alamouti/qpsk/ldpc3/4": 8.0,
+  "awgn/alamouti/qpsk/ldpc5/6": 8.4,
+  "awgn/alamouti/16qam/rs": 17.2,
+  "awgn/alamouti/16qam/ldpc1/2": 10.2,
+  "awgn/alamouti/16qam/ldpc2/3": 12.3,
+  "awgn/alamouti/16qam/ldpc3/4": 13.3,
+  "awgn/alamouti/16qam/ldpc5/6": 14.2,
+  "awgn/alamouti/64qam/rs": 22.5,
+  "awgn/alamouti/64qam/ldpc1/2": 12.7,
+  "awgn/alamouti/64qam/ldpc2/3": 16.5,
+  "awgn/alamouti/64qam/ldpc3/4": 18.1,
+  "awgn/alamouti/64qam/ldpc5/6": 18.6,
+  "rayleigh/siso/bpsk/rs": 31.2,
+  "rayleigh/siso/bpsk/ldpc1/2": 15.7,
+  "rayleigh/siso/bpsk/ldpc2/3": 16.8,
+  "rayleigh/siso/bpsk/ldpc3/4": 18.3,
+  "rayleigh/siso/bpsk/ldpc5/6": 21.2,
+  "rayleigh/siso/qpsk/rs": 30.4,
+  "rayleigh/siso/qpsk/ldpc1/2": 17.3,
+  "rayleigh/siso/qpsk/ldpc2/3": 20.0,
+  "rayleigh/siso/qpsk/ldpc3/4": 22.3,
+  "rayleigh/siso/qpsk/ldpc5/6": 23.7,
+  "rayleigh/siso/16qam/rs": null,
+  "rayleigh/siso/16qam/ldpc1/2": 20.9,
+  "rayleigh/siso/16qam/ldpc2/3": 25.1,
+  "rayleigh/siso/16qam/ldpc3/4": 27.3,
+  "rayleigh/siso/16qam/ldpc5/6": 28.4,
+  "rayleigh/siso/64qam/rs": null,
+  "rayleigh/siso/64qam/ldpc1/2": 26.3,
+  "rayleigh/siso/64qam/ldpc2/3": 30.5,
+  "rayleigh/siso/64qam/ldpc3/4": 32.2,
+  "rayleigh/siso/64qam/ldpc5/6": 33.1,
+  "rayleigh/alamouti/bpsk/rs": 11.4,
+  "rayleigh/alamouti/bpsk/ldpc1/2": 6.6,
+  "rayleigh/alamouti/bpsk/ldpc2/3": 7.9,
+  "rayleigh/alamouti/bpsk/ldpc3/4": 8.0,
+  "rayleigh/alamouti/bpsk/ldpc5/6": 8.9,
+  "rayleigh/alamouti/qpsk/rs": 13.1,
+  "rayleigh/alamouti/qpsk/ldpc1/2": 8.6,
+  "rayleigh/alamouti/qpsk/ldpc2/3": 9.6,
+  "rayleigh/alamouti/qpsk/ldpc3/4": 10.3,
+  "rayleigh/alamouti/qpsk/ldpc5/6": 10.8,
+  "rayleigh/alamouti/16qam/rs": 20.5,
+  "rayleigh/alamouti/16qam/ldpc1/2": 12.6,
+  "rayleigh/alamouti/16qam/ldpc2/3": 14.7,
+  "rayleigh/alamouti/16qam/ldpc3/4": 16.2,
+  "rayleigh/alamouti/16qam/ldpc5/6": 16.1,
+  "rayleigh/alamouti/64qam/rs": 25.3,
+  "rayleigh/alamouti/64qam/ldpc1/2": 16.0,
+  "rayleigh/alamouti/64qam/ldpc2/3": 19.3,
+  "rayleigh/alamouti/64qam/ldpc3/4": 20.6,
+  "rayleigh/alamouti/64qam/ldpc5/6": 21.4
+ },
+ "ldpc_gain_db": {
+  "awgn/siso/bpsk/ldpc1/2": 3.1,
+  "awgn/siso/bpsk/ldpc2/3": 3.0,
+  "awgn/siso/bpsk/ldpc3/4": 2.9,
+  "awgn/siso/bpsk/ldpc5/6": 1.4,
+  "awgn/siso/qpsk/ldpc1/2": 5.7,
+  "awgn/siso/qpsk/ldpc2/3": 3.8,
+  "awgn/siso/qpsk/ldpc3/4": 3.5,
+  "awgn/siso/qpsk/ldpc5/6": 2.4,
+  "awgn/siso/16qam/ldpc1/2": 7.7,
+  "awgn/siso/16qam/ldpc2/3": 5.7,
+  "awgn/siso/16qam/ldpc3/4": 4.0,
+  "awgn/siso/16qam/ldpc5/6": 3.6,
+  "awgn/siso/64qam/ldpc1/2": 9.7,
+  "awgn/siso/64qam/ldpc2/3": 6.2,
+  "awgn/siso/64qam/ldpc3/4": 4.8,
+  "awgn/siso/64qam/ldpc5/6": 3.8,
+  "awgn/alamouti/bpsk/ldpc1/2": 2.8,
+  "awgn/alamouti/bpsk/ldpc2/3": 2.3,
+  "awgn/alamouti/bpsk/ldpc3/4": 2.1,
+  "awgn/alamouti/bpsk/ldpc5/6": 1.8,
+  "awgn/alamouti/qpsk/ldpc1/2": 4.5,
+  "awgn/alamouti/qpsk/ldpc2/3": 3.0,
+  "awgn/alamouti/qpsk/ldpc3/4": 2.5,
+  "awgn/alamouti/qpsk/ldpc5/6": 2.1,
+  "awgn/alamouti/16qam/ldpc1/2": 7.0,
+  "awgn/alamouti/16qam/ldpc2/3": 4.9,
+  "awgn/alamouti/16qam/ldpc3/4": 3.9,
+  "awgn/alamouti/16qam/ldpc5/6": 3.0,
+  "awgn/alamouti/64qam/ldpc1/2": 9.8,
+  "awgn/alamouti/64qam/ldpc2/3": 6.0,
+  "awgn/alamouti/64qam/ldpc3/4": 4.4,
+  "awgn/alamouti/64qam/ldpc5/6": 3.9,
+  "rayleigh/siso/bpsk/ldpc1/2": 15.5,
+  "rayleigh/siso/bpsk/ldpc2/3": 14.4,
+  "rayleigh/siso/bpsk/ldpc3/4": 12.9,
+  "rayleigh/siso/bpsk/ldpc5/6": 10.0,
+  "rayleigh/siso/qpsk/ldpc1/2": 13.1,
+  "rayleigh/siso/qpsk/ldpc2/3": 10.4,
+  "rayleigh/siso/qpsk/ldpc3/4": 8.1,
+  "rayleigh/siso/qpsk/ldpc5/6": 6.7,
+  "rayleigh/siso/16qam/ldpc1/2": null,
+  "rayleigh/siso/16qam/ldpc2/3": null,
+  "rayleigh/siso/16qam/ldpc3/4": null,
+  "rayleigh/siso/16qam/ldpc5/6": null,
+  "rayleigh/siso/64qam/ldpc1/2": null,
+  "rayleigh/siso/64qam/ldpc2/3": null,
+  "rayleigh/siso/64qam/ldpc3/4": null,
+  "rayleigh/siso/64qam/ldpc5/6": null,
+  "rayleigh/alamouti/bpsk/ldpc1/2": 4.8,
+  "rayleigh/alamouti/bpsk/ldpc2/3": 3.5,
+  "rayleigh/alamouti/bpsk/ldpc3/4": 3.4,
+  "rayleigh/alamouti/bpsk/ldpc5/6": 2.5,
+  "rayleigh/alamouti/qpsk/ldpc1/2": 4.5,
+  "rayleigh/alamouti/qpsk/ldpc2/3": 3.5,
+  "rayleigh/alamouti/qpsk/ldpc3/4": 2.8,
+  "rayleigh/alamouti/qpsk/ldpc5/6": 2.3,
+  "rayleigh/alamouti/16qam/ldpc1/2": 7.9,
+  "rayleigh/alamouti/16qam/ldpc2/3": 5.8,
+  "rayleigh/alamouti/16qam/ldpc3/4": 4.3,
+  "rayleigh/alamouti/16qam/ldpc5/6": 4.4,
+  "rayleigh/alamouti/64qam/ldpc1/2": 9.3,
+  "rayleigh/alamouti/64qam/ldpc2/3": 6.0,
+  "rayleigh/alamouti/64qam/ldpc3/4": 4.7,
+  "rayleigh/alamouti/64qam/ldpc5/6": 3.9
+ },
+ "acm_rs_vs_ldpc": {
+  "awgn/siso/0": [
+   0.0,
+   0.0,
+   1.0,
+   1.0
+  ],
+  "awgn/siso/2": [
+   0.0,
+   0.0,
+   1.0,
+   1.0
+  ],
+  "awgn/siso/4": [
+   14.8,
+   176.9,
+   0.92607,
+   0.11529
+  ],
+  "awgn/siso/6": [
+   199.4,
+   200.0,
+   0.00292,
+   0.0
+  ],
+  "awgn/siso/8": [
+   200.0,
+   200.0,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/10": [
+   200.0,
+   200.0,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/12": [
+   200.0,
+   200.0,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/14": [
+   200.0,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/16": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/18": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/20": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/22": [
+   736.8,
+   736.8,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/24": [
+   736.8,
+   736.8,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/26": [
+   736.8,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/28": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/30": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/32": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/siso/34": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/0": [
+   0.0,
+   0.0,
+   1.0,
+   1.0
+  ],
+  "awgn/alamouti/2": [
+   0.0,
+   0.0,
+   1.0,
+   1.0
+  ],
+  "awgn/alamouti/4": [
+   0.0,
+   0.0,
+   1.0,
+   1.0
+  ],
+  "awgn/alamouti/6": [
+   3.3,
+   148.9,
+   0.98371,
+   0.25564
+  ],
+  "awgn/alamouti/8": [
+   197.7,
+   200.0,
+   0.01128,
+   0.0
+  ],
+  "awgn/alamouti/10": [
+   200.0,
+   200.0,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/12": [
+   200.0,
+   200.0,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/14": [
+   200.0,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/16": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/18": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/20": [
+   387.3,
+   387.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/22": [
+   736.8,
+   736.8,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/24": [
+   736.8,
+   736.8,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/26": [
+   736.8,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/28": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/30": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/32": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "awgn/alamouti/34": [
+   1061.3,
+   1061.3,
+   0.0,
+   0.0
+  ],
+  "rayleigh/siso/0": [
+   8.9,
+   11.3,
+   0.95572,
+   0.94361
+  ],
+  "rayleigh/siso/2": [
+   6.9,
+   48.9,
+   0.96564,
+   0.75533
+  ],
+  "rayleigh/siso/4": [
+   79.5,
+   114.8,
+   0.60265,
+   0.42607
+  ],
+  "rayleigh/siso/6": [
+   36.7,
+   100.4,
+   0.81673,
+   0.49822
+  ],
+  "rayleigh/siso/8": [
+   83.2,
+   157.0,
+   0.58417,
+   0.26508
+  ],
+  "rayleigh/siso/10": [
+   146.4,
+   120.9,
+   0.31402,
+   0.39526
+  ],
+  "rayleigh/siso/12": [
+   243.7,
+   143.8,
+   0.06439,
+   0.36758
+  ],
+  "rayleigh/siso/14": [
+   112.6,
+   213.4,
+   0.47522,
+   0.13614
+  ],
+  "rayleigh/siso/16": [
+   241.7,
+   352.8,
+   0.0655,
+   0.00589
+  ],
+  "rayleigh/siso/18": [
+   275.1,
+   449.7,
+   0.05719,
+   0.03811
+  ],
+  "rayleigh/siso/20": [
+   341.9,
+   320.7,
+   0.00662,
+   0.06582
+  ],
+  "rayleigh/siso/22": [
+   564.5,
+   615.4,
+   0.00111,
+   0.00149
+  ],
+  "rayleigh/siso/24": [
+   578.9,
+   623.4,
+   0.00556,
+   0.00321
+  ],
+  "rayleigh/siso/26": [
+   672.6,
+   599.7,
+   0.0031,
+   0.00699
+  ],
+  "rayleigh/siso/28": [
+   1011.2,
+   950.0,
+   0.00177,
+   4e-05
+  ],
+  "rayleigh/siso/30": [
+   890.8,
+   1100.4,
+   0.00309,
+   0.00038
+  ],
+  "rayleigh/siso/32": [
+   893.9,
+   1006.6,
+   0.0176,
+   0.00062
+  ],
+  "rayleigh/siso/34": [
+   1058.2,
+   922.8,
+   0.0,
+   0.00437
+  ],
+  "rayleigh/alamouti/0": [
+   0.0,
+   16.4,
+   1.0,
+   0.91823
+  ],
+  "rayleigh/alamouti/2": [
+   12.8,
+   68.1,
+   0.93588,
+   0.65925
+  ],
+  "rayleigh/alamouti/4": [
+   115.7,
+   135.0,
+   0.42168,
+   0.32477
+  ],
+  "rayleigh/alamouti/6": [
+   149.9,
+   134.2,
+   0.25073,
+   0.32884
+  ],
+  "rayleigh/alamouti/8": [
+   198.1,
+   199.6,
+   0.00971,
+   0.00209
+  ],
+  "rayleigh/alamouti/10": [
+   239.2,
+   291.3,
+   0.00131,
+   0.00014
+  ],
+  "rayleigh/alamouti/12": [
+   257.9,
+   359.9,
+   0.0004,
+   0.0022
+  ],
+  "rayleigh/alamouti/14": [
+   325.0,
+   396.8,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/16": [
+   473.8,
+   405.5,
+   0.00312,
+   0.00538
+  ],
+  "rayleigh/alamouti/18": [
+   577.9,
+   584.6,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/20": [
+   687.8,
+   784.2,
+   0.00055,
+   0.0
+  ],
+  "rayleigh/alamouti/22": [
+   713.0,
+   887.6,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/24": [
+   866.5,
+   1165.3,
+   0.00029,
+   0.0
+  ],
+  "rayleigh/alamouti/26": [
+   1144.7,
+   1134.8,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/28": [
+   1125.3,
+   1127.1,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/30": [
+   1165.3,
+   1165.3,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/32": [
+   1165.3,
+   1165.3,
+   0.0,
+   0.0
+  ],
+  "rayleigh/alamouti/34": [
+   1165.3,
+   1165.3,
+   0.0,
+   0.0
+  ]
+ }
+}

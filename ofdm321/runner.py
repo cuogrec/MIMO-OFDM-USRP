@@ -24,10 +24,12 @@ LOG = logging.getLogger("ofdm321")
 
 def capacity(s):
     acm = bool(getattr(s, "acm", False))
-    fl = frame_samples(s.mimo_mode, s.modulation, s.frame_gap_samples, acm)
+    fec, rate = getattr(s, "fec", "rs"), getattr(s, "ldpc_rate", "3/4")
+    fl = frame_samples(s.mimo_mode, s.modulation, s.frame_gap_samples, acm, fec, rate)
     fps = s.sample_rate / fl
     per_packet = TS_CHUNK_BYTES * 8 * 8 / 16                 # TS bits per packet after RS8+8
-    out = {"frame_samples": fl, "frames_per_s": fps}
+    out = {"frame_samples": fl, "frames_per_s": fps, "fec": fec if fec == "rs" else
+           f"ldpc {'5/6 punctured to 2016 bits' if acm else rate}"}
     if acm:
         from .acm import parse_modcods
         out["acm_ts_capacity_bps"] = {m: fps * codewords_per_frame(s.mimo_mode, m) * per_packet
@@ -134,6 +136,8 @@ def parse(argv):
     p.add_argument("--tx-rms", dest="tx_rms", type=float)
     p.add_argument("--interleaver", choices=("none", "block", "carrier"))
     p.add_argument("--no-soft", dest="soft_decoding", action="store_const", const=False)
+    p.add_argument("--fec", choices=("rs", "ldpc"), help="inner code: rs (default) or ldpc (802.11n)")
+    p.add_argument("--ldpc-rate", dest="ldpc_rate", choices=("1/2", "2/3", "3/4", "5/6"))
     p.add_argument("--args", dest="device_args")
     p.add_argument("--snr", dest="sim_snr_db", type=float)
     p.add_argument("--cfo", dest="sim_cfo_hz", type=float)
@@ -152,7 +156,8 @@ def main(argv=None):
     a = parse(argv if argv is not None else sys.argv[1:])
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     keys = ("mimo_mode", "modulation", "sample_rate", "frequency", "tx_gain", "rx_gain", "tx_rms",
-            "device_args", "sim_snr_db", "sim_cfo_hz", "sim_channel", "interleaver", "soft_decoding")
+            "device_args", "sim_snr_db", "sim_cfo_hz", "sim_channel", "interleaver", "soft_decoding",
+            "fec", "ldpc_rate")
     s = load_settings(a.config, **{k: getattr(a, k) for k in keys})
     require_ffmpeg()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

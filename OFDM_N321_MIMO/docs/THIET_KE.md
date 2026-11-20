@@ -74,7 +74,7 @@ VideoReceiver ◄─PDU (đã qua CRC)─ MimoRxSink ◄══2 luồng══ UH
 | STF | 1 | Chỉ dùng sóng mang chẵn, nên tín hiệu tuần hoàn chu kỳ 32 mẫu (Schmidl-Cox). TX1 phát bản dịch vòng 4 mẫu (CSD) để hai anten không triệt tiêu nhau |
 | LTF | 2 | Ma trận P: TX0 phát [L, L], TX1 phát [L, −L]. Từ đó có H(k) cho từng cặp TX–RX và từng sóng mang; nhiễu đo trên các bin rỗng |
 | SIG | 1 | 48 bit BPSK: magic 0xA5, mode, điều chế, số thứ tự khung, CRC16. Khi có 2 TX thì mã SFBC. Khung có SIG sai được giải thử với cấu hình đã biết (v0.6, mục 5.1); không qua RS + CRC32 thì bị bỏ |
-| DATA | Np | Một từ mã 248 B (212 B ứng dụng + CRC32 + RS 32 B), đã scramble; 4 pilot mỗi symbol |
+| DATA | Np | Một từ mã 248 B (212 B ứng dụng + CRC32 + RS 32 B), đã scramble; 4 pilot mỗi symbol. Với `--fec ldpc` (v0.6): 2 codeword LDPC 802.11n mỗi gói, interleaver bit, xem `OFDM_N321_RX/docs/LDPC.md` |
 | gap | 80 mẫu | Toàn số 0 |
 
 Mỗi symbol gồm 16 mẫu CP + 64 mẫu FFT. Pilot của hai anten đều đã biết trước: bộ thu dự đoán pilot qua H

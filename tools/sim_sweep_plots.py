@@ -196,3 +196,93 @@ def make_plots(fer_rows, acm_rows, out):
     for name in ("fer_vs_snr.png", "throughput_vs_snr.png", "mimo_compare.png", "soft_gain.png", "summary.json"):
         print(out / name)
     return s
+
+
+# ---------------------------------------------------------------- LDPC vs RS
+LDPC_RATES = ("1/2", "2/3", "3/4", "5/6")
+
+
+def ldpc_summary(fer_rows, acm_rows, ldpc_rows, acm_ldpc_rows):
+    """SNR at FER 1 % for RS (soft) and every LDPC rate, the gain (RS - LDPC, dB), and ACM goodputs."""
+    s = {"snr_fer1pct": {}, "ldpc_gain_db": {}, "acm_rs_vs_ldpc": {}}
+    for ch in ("awgn", "rayleigh"):
+        for mi in ("siso", "alamouti"):
+            for mo in MODS:
+                rs = snr_at_fer(fer_rows, mimo=mi, mod=mo, channel=ch, soft=1)
+                s["snr_fer1pct"][f"{ch}/{mi}/{mo}/rs"] = rs
+                for r in LDPC_RATES:
+                    v = snr_at_fer(ldpc_rows, mimo=mi, mod=mo, channel=ch, fec=f"ldpc{r}")
+                    s["snr_fer1pct"][f"{ch}/{mi}/{mo}/ldpc{r}"] = v
+                    s["ldpc_gain_db"][f"{ch}/{mi}/{mo}/ldpc{r}"] = (None if rs is None or v is None
+                                                                    else round(rs - v, 1))
+            for r in acm_ldpc_rows:
+                if r["mimo"] == mi and r["channel"] == ch:
+                    rs = next((x for x in acm_rows if x["mimo"] == mi and x["channel"] == ch
+                               and x["snr_db"] == r["snr_db"]), None)
+                    if rs is None:
+                        continue
+                    s["acm_rs_vs_ldpc"][f"{ch}/{mi}/{r['snr_db']:g}"] = [rs["goodput_kbps"], r["goodput_kbps"],
+                                                                         rs["cer"], r["cer"]]
+    return s
+
+
+def make_ldpc_plots(fer_rows, acm_rows, ldpc_rows, acm_ldpc_rows, out):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    _style(plt)
+    out = Path(out)
+    snr_max = max(r["snr_db"] for r in ldpc_rows)
+    cols = [(mi, ch) for mi in ("siso", "alamouti") for ch in ("awgn", "rayleigh")]
+    fig, axs = plt.subplots(2, 4, figsize=(16, 8.2))
+    for j, (mi, ch) in enumerate(cols):
+        # FER: RS (dashed) vs LDPC 5/6 (solid, the closest rate: 0.80 vs RS 0.87) per modulation
+        ax = axs[0, j]
+        ax.set_yscale("log")
+        ax.set_ylim(FER_FLOOR * 0.8, 1.2)
+        ax.set_xlim(0, snr_max)
+        ax.axhline(0.01, color=MUTED, lw=0.8, ls=(0, (2, 3)))
+        for c, mo in zip(SERIES, MODS):
+            x, rs = _series(fer_rows, mimo=mi, mod=mo, channel=ch, soft=1)
+            ax.plot(x, [max(r["fer"], FER_FLOOR) for r in rs], color=c, lw=1.4, ls=(0, (4, 2)),
+                    label=f"{MOD_NAME[mo]} RS")
+            x, ls_ = _series(ldpc_rows, mimo=mi, mod=mo, channel=ch, fec="ldpc5/6")
+            ax.plot(x, [max(r["fer"], FER_FLOOR) for r in ls_], color=c, lw=1.8, label=f"{MOD_NAME[mo]} LDPC 5/6")
+        ax.set_title(f"{mi}, {CH_NAME[ch]}", fontsize=10)
+        ax.set_xlabel("SNR (dB)")
+        if j == 0:
+            ax.set_ylabel("FER (đứt: RS, liền: LDPC 5/6)")
+        # goodput: best fixed modulation with RS / with LDPC (any rate), ACM + RS, ACM + LDPC
+        ax = axs[1, j]
+        ax.set_xlim(0, snr_max)
+        snrs = sorted({r["snr_db"] for r in ldpc_rows})
+
+        def best(rows, **sel):
+            return [max([r["goodput_kbps"] for r in rows if r["snr_db"] == x
+                         and all(r[k] == v for k, v in sel.items())] or [0]) for x in snrs]
+        ax.plot(snrs, best(fer_rows, mimo=mi, channel=ch, soft=1), color=SERIES[0], lw=1.6, ls=(0, (4, 2)),
+                label="cố định tốt nhất, RS")
+        ax.plot(snrs, best(ldpc_rows, mimo=mi, channel=ch), color=SERIES[0], lw=1.8,
+                label="cố định tốt nhất, LDPC (mọi tỉ lệ)")
+        x, rs = _series(acm_rows, mimo=mi, channel=ch)
+        ax.plot(x, [r["goodput_kbps"] for r in rs], color=SERIES[1], lw=1.6, ls=(0, (4, 2)), label="ACM + RS")
+        x, rs = _series(acm_ldpc_rows, mimo=mi, channel=ch)
+        ax.plot(x, [r["goodput_kbps"] for r in rs], color=SERIES[1], lw=2.2, label="ACM + LDPC")
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel("SNR (dB)")
+        if j == 0:
+            ax.set_ylabel("thông lượng hữu ích (kb/s TS ở 1 MS/s)")
+    h, lab = axs[0, 0].get_legend_handles_labels()
+    fig.legend(h, lab, loc="upper center", ncol=8, bbox_to_anchor=(0.5, 0.995), fontsize=7.5)
+    h, lab = axs[1, 0].get_legend_handles_labels()
+    axs[1, 0].legend(h, lab, loc="upper left", fontsize=7.5)
+    fig.suptitle("LDPC 802.11n và RS(248,216): FER (hàng trên) và thông lượng hữu ích (hàng dưới)", y=0.955,
+                 fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(out / "ldpc_vs_rs.png", dpi=110)
+    plt.close(fig)
+    s = ldpc_summary(fer_rows, acm_rows, ldpc_rows, acm_ldpc_rows)
+    (out / "ldpc_summary.json").write_text(json.dumps(s, indent=1, ensure_ascii=False))
+    print(out / "ldpc_vs_rs.png")
+    print(out / "ldpc_summary.json")
+    return s

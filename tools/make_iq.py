@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--mod", dest="modulation", choices=("bpsk", "qpsk", "16qam", "64qam"))
     ap.add_argument("--interleaver", choices=("none", "block", "carrier"))
     ap.add_argument("--tx-rms", dest="tx_rms", type=float)
+    ap.add_argument("--fec", choices=("rs", "ldpc"), help="inner code (the RX must use the same --fec)")
+    ap.add_argument("--ldpc-rate", dest="ldpc_rate", choices=("1/2", "2/3", "3/4", "5/6"))
     ap.add_argument("--source", choices=("testpattern", "file"), default="testpattern")
     ap.add_argument("--input")
     ap.add_argument("--seconds", type=float, default=20, help="video length")
@@ -62,7 +64,7 @@ def main():
     ap.add_argument("--tail", type=float, default=4, help="IDLE seconds after END")
     a = ap.parse_args()
     s = load_settings(a.config, mimo_mode=a.mimo_mode, modulation=a.modulation,
-                      interleaver=a.interleaver, tx_rms=a.tx_rms)
+                      interleaver=a.interleaver, tx_rms=a.tx_rms, fec=a.fec, ldpc_rate=a.ldpc_rate)
     require_ffmpeg()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = PROOT / "runs" / f"{stamp}_iq_{s.mimo_mode}_{s.modulation}"
@@ -80,7 +82,8 @@ def main():
     print(f"packets: {len(col.packets)} ({data} DATA)")
 
     # 2. packets -> frames -> int16 IQ file
-    mod = Modulator(s.mimo_mode, s.modulation, s.frame_gap_samples, s.tx_rms, s.interleaver)
+    mod = Modulator(s.mimo_mode, s.modulation, s.frame_gap_samples, s.tx_rms, s.interleaver, fec=s.fec,
+                    ldpc_rate=s.ldpc_rate)
     idle = mod.frame(pack_packet(IDLE, session))
     fl = idle.shape[1]
     n_warm = int(a.warmup * s.sample_rate / fl)

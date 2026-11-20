@@ -54,6 +54,8 @@ MIMO-OFDM-USRP/
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
 - FEC: CRC32 + RS(248,216) trong, có **giải mềm** errors-and-erasures; interleaver `block` / `carrier`; RS8+8 ngoài,
   chỉ giao dữ liệu đã kiểm chứng.
+- **LDPC 802.11n làm mã trong (v0.6, tùy chọn `--fec ldpc --ldpc-rate 1/2|2/3|3/4|5/6`, hai bên phải giống nhau):**
+  giải min-sum theo lớp, LLR mềm max-log, interleaver bit ([LDPC.md](OFDM_N321_RX/docs/LDPC.md)). Mặc định vẫn RS.
 - Mô phỏng không cần radio: kênh 2×2 Rayleigh hoặc đa đường, AWGN, CFO, SFO; TX và RX hai tiến trình nối qua ZeroMQ.
 
 ## Bắt đầu nhanh (Ubuntu 24.04)
@@ -76,6 +78,7 @@ Hướng dẫn chi tiết:
 - [Phản hồi ACM qua sóng radio, không cần mạng giữa hai PC](OFDM_N321_RX/docs/PHAN_HOI_RADIO.md)
 - [PC chỉ có một cổng mạng: N321 #1 tự phát file IQ](OFDM_N321_TX/docs/MOT_CONG_MANG.md)
 - [Đo đặc trưng hệ thống bằng mô phỏng: FER, thông lượng, ACM theo SNR](results/README.md)
+- [LDPC làm mã trong](OFDM_N321_RX/docs/LDPC.md)
 
 ## Trạng thái
 

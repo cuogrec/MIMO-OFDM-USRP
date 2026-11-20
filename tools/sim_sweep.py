@@ -5,6 +5,8 @@
    soft on/off, SNR 0..35 dB step 2. Real fixed-mode frames (one 212-byte packet per frame, block
    interleaver), the project's Modulator/Demodulator incl. Schmidl-Cox detection and a small CFO.
    FER = lost packets / sent packets; goodput = (1 - FER) x TS capacity after RS8+8 (kb/s at 1 MS/s).
+3. --fec ldpc / both: the same with the 802.11n LDPC inner code (rates 1/2, 2/3, 3/4, 5/6; ACM frames: 5/6
+   punctured), siso/alamouti x awgn/rayleigh -> ldpc_sweep.csv, acm_ldpc_sweep.csv, ldpc_vs_rs.png.
 2. ACM curve: ACM frames (3760 samples, k codewords), block fading (one 2x2 channel per second), the
    project's AcmController fed like the real link (EWMA 0.8/0.2 of SNR_eff, report every 0.02 s,
    ~40 ms loop delay, codeword error rate over 0.1 s). Goodput = delivered codewords x 752 bits.
@@ -14,6 +16,7 @@ SNR = total transmit power x E|h|^2 / noise power per receive antenna (both TX t
     python3 tools/sim_sweep.py                    # full run (~minutes on 16 cores) -> results/
     python3 tools/sim_sweep.py --quick            # small check
     python3 tools/sim_sweep.py --plots-only       # redraw PNGs from results/*.csv
+    python3 tools/sim_sweep.py --fec ldpc         # only the LDPC part (RS results are read from results/)
 """
 import argparse
 import csv
@@ -38,6 +41,10 @@ TS_BITS_PER_PACKET = 188 * 8 * 8 / 16          # TS bits per packet after the RS
 CFO = 1e-4                        # cycles/sample (100 Hz at 1 MS/s)
 PAD = 300
 ACM_MODS = "bpsk,qpsk,16qam,64qam"
+LDPC_RATES = ("1/2", "2/3", "3/4", "5/6")
+LDPC_MIMOS = ("siso", "alamouti")
+LDPC_CHANNELS = ("awgn", "rayleigh")
+BATCH = 16                        # frames per demodulate_batch call, like MimoRxSink
 
 H_FIXED = np.array([[1.0, 0.45j], [-0.35, 0.9 * np.exp(0.7j)]])
 H2_FIXED = 0.15 * np.array([[1, -1j], [0.5j, 1]])
@@ -108,17 +115,65 @@ def fixed_point(args):
             "goodput_kbps": round((1 - fer) * cap, 1)}
 
 
+def fixed_point_batched(args):
+    """fixed_point for any inner code, frames decoded BATCH at a time (LDPC decodes all packets of a batch
+    in one call, as in MimoRxSink)."""
+    mimo, mod, channel, fec, rate, snr, frames, seed = args
+    rng = np.random.default_rng(seed)
+    tx = Modulator(mimo, mod, gap=GAP, fec=fec, ldpc_rate=rate)
+    rx = Demodulator(mimo, mod, soft=True, soft_cpu=1e9, fec=fec, ldpc_rate=rate)
+    lost = missed = 0
+    power = None
+    for b0 in range(0, frames, BATCH):
+        pkts, ys, starts, ps, where = [], [], [], [], []
+        off = 0
+        for _ in range(min(BATCH, frames - b0)):
+            pkt = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+            x = tx.frame(pkt)
+            power = power or tx_power(x)
+            H, H2 = draw_channel(channel, rng)
+            y = through(x, H, H2, snr, power, rng, rng.uniform(0, 2 * np.pi))
+            s0, p = rx.find(y)
+            pkts.append(pkt)
+            ys.append(y)
+            if s0 is not None and s0 + rx.body_len <= y.shape[1]:
+                starts.append(off + s0)
+                ps.append(p)
+                where.append(len(pkts) - 1)
+            off += y.shape[1]
+        outs = [(None, None)] * len(pkts)
+        if starts:
+            for i, r in zip(where, rx.demodulate_batch(np.concatenate(ys, axis=1), starts, ps)):
+                outs[i] = r
+        for i, (out, info) in enumerate(outs):
+            if info is None or info["reason"] == "sig":        # missed or SIG failed: search on (rare)
+                out, info = receive(rx, ys[i]) if info is not None else (None, None)
+            missed += info is None
+            lost += out != pkts[i]
+    fl = frame_samples(mimo, mod, GAP, fec=fec, ldpc_rate=rate)
+    cap = RATE / fl * TS_BITS_PER_PACKET / 1e3
+    fer = lost / frames
+    return {"mimo": mimo, "mod": mod, "channel": channel, "fec": fec_label(fec, rate), "snr_db": snr,
+            "frames": frames, "lost": lost, "not_detected": missed, "fer": round(fer, 5),
+            "capacity_kbps": round(cap, 1), "goodput_kbps": round((1 - fer) * cap, 1)}
+
+
+def fec_label(fec, rate):
+    return "rs" if fec == "rs" else f"ldpc{rate}"
+
+
 # ---------------------------------------------------------------- 2. ACM
 def acm_point(args):
     """One SNR point of the ACM curve: `blocks` channel realisations, each held for `block_s` seconds."""
-    mimo, channel, snr, blocks, block_s, seed = args
+    mimo, channel, snr, blocks, block_s, seed = args[:6]
+    fec = args[6] if len(args) > 6 else "rs"
     from ofdm321.acm import AcmController
     rng = np.random.default_rng(seed)
-    tx = Modulator(mimo, "qpsk", gap=GAP, acm=True)
-    rx = Demodulator(mimo, "qpsk", soft=True, soft_cpu=1e9, acm=True)
+    tx = Modulator(mimo, "qpsk", gap=GAP, acm=True, fec=fec)
+    rx = Demodulator(mimo, "qpsk", soft=True, soft_cpu=1e9, acm=True, fec=fec)
     T = frame_samples(mimo, "qpsk", GAP, acm=True) / RATE          # 3.76 ms
     frames_per_block = int(round(block_s / T))
-    ctl = AcmController(ACM_MODS)
+    ctl = AcmController(ACM_MODS, fec=fec)
     delay = int(round(0.04 / T))                                    # ~40 ms feedback loop
     report_every = max(1, int(round(0.02 / T)))                     # report every 0.02 s
     window = max(1, int(round(0.1 / T)))                            # codeword error rate over 0.1 s
@@ -163,7 +218,8 @@ def acm_point(args):
                 ctl.index, ctl.last_report = 0, None                                # (simulated time)
     dur = t
     frames = sum(used.values())
-    return {"mimo": mimo, "channel": channel, "snr_db": snr, "seconds": round(dur, 2),
+    return {"mimo": mimo, "channel": channel, **({"fec": fec} if fec != "rs" else {}),
+            "snr_db": snr, "seconds": round(dur, 2),
             "codewords_sent": sent, "codewords_ok": ok, "cer": round(1 - ok / max(1, sent), 5),
             "goodput_kbps": round(ok * TS_BITS_PER_PACKET / dur / 1e3, 1),
             **{f"share_{m}": round(used[m] / frames, 4) for m in MODS}}
@@ -215,13 +271,15 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--quick", action="store_true", help="few frames, coarse SNR: a fast check")
     ap.add_argument("--plots-only", action="store_true")
+    ap.add_argument("--fec", choices=("rs", "ldpc", "both"), default="both",
+                    help="rs: the RS sweep; ldpc: the LDPC sweep (RS CSVs read from --out); both (default)")
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     if a.quick:
         a.frames, a.acm_blocks, a.snr = 40, 2, [0, 35, 7]
     snrs = [float(s) for s in np.arange(a.snr[0], a.snr[1] + 1e-9, a.snr[2])]
-    if not a.plots_only:
+    if not a.plots_only and a.fec in ("rs", "both"):
         t0 = time.time()
         jobs = [(mi, mo, ch, so, s, a.frames, 1000 + i)
                 for i, (mi, mo, ch, so, s) in enumerate(
@@ -241,8 +299,32 @@ def main(argv=None):
         arows.sort(key=lambda r: (MIMOS.index(r["mimo"]), CHANNELS.index(r["channel"]), r["snr_db"]))
         write_csv(out / "acm_sweep.csv", arows)
         print(f"done in {time.time() - t0:.0f} s -> {out}", flush=True)
-    from sim_sweep_plots import make_plots   # noqa: E402  (tools/sim_sweep_plots.py)
-    make_plots(read_csv(out / "fer_sweep.csv"), read_csv(out / "acm_sweep.csv"), out)
+    if not a.plots_only and a.fec in ("ldpc", "both"):
+        t0 = time.time()
+        jobs = [(mi, mo, ch, "ldpc", r, s, a.frames, 7000 + i) for i, (mi, mo, ch, r, s) in enumerate(
+            (mi, mo, ch, r, s) for mi in LDPC_MIMOS for mo in MODS for ch in LDPC_CHANNELS for r in LDPC_RATES
+            for s in snrs)]
+        print(f"LDPC fixed modulation: {len(jobs)} points x {a.frames} frames", flush=True)
+        jobs.sort(key=lambda j: j[5])           # low SNR first: the slow points (many iterations) start early
+        rows = run_all(fixed_point_batched, jobs, a.workers, "ldpc")
+        rows.sort(key=lambda r: (MIMOS.index(r["mimo"]), MODS.index(r["mod"]), CHANNELS.index(r["channel"]),
+                                 r["fec"], r["snr_db"]))
+        write_csv(out / "ldpc_sweep.csv", rows)
+        acm_jobs = [(mi, ch, s, a.acm_blocks if ch == "rayleigh" else max(2, a.acm_blocks // 4),
+                     a.acm_block_s, 9000 + i, "ldpc")
+                    for i, (mi, ch, s) in enumerate((mi, ch, s) for mi in LDPC_MIMOS for ch in LDPC_CHANNELS
+                                                    for s in snrs)]
+        print(f"ACM + LDPC: {len(acm_jobs)} points", flush=True)
+        arows = run_all(acm_point, acm_jobs, a.workers, "acm-ldpc")
+        arows.sort(key=lambda r: (MIMOS.index(r["mimo"]), CHANNELS.index(r["channel"]), r["snr_db"]))
+        write_csv(out / "acm_ldpc_sweep.csv", arows)
+        print(f"LDPC done in {time.time() - t0:.0f} s -> {out}", flush=True)
+    from sim_sweep_plots import make_plots, make_ldpc_plots   # noqa: E402  (tools/sim_sweep_plots.py)
+    if a.fec in ("rs", "both") or a.plots_only:
+        make_plots(read_csv(out / "fer_sweep.csv"), read_csv(out / "acm_sweep.csv"), out)
+    if (out / "ldpc_sweep.csv").exists() and a.fec in ("ldpc", "both"):
+        make_ldpc_plots(read_csv(out / "fer_sweep.csv"), read_csv(out / "acm_sweep.csv"),
+                        read_csv(out / "ldpc_sweep.csv"), read_csv(out / "acm_ldpc_sweep.csv"), out)
 
 
 if __name__ == "__main__":

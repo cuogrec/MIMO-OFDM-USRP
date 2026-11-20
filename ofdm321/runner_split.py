@@ -41,6 +41,10 @@ def common_args(p):
                    help="ACM feedback path: udp (network, default) or radio (RF1 of both N321, --mimo siso)")
     p.add_argument("--fb-freq", dest="fb_freq", type=float, help="radio feedback carrier (default 922.7e6)")
     p.add_argument("--fb-rate", dest="fb_rate", type=float, help="radio feedback sample rate (default 500e3)")
+    p.add_argument("--fec", choices=("rs", "ldpc"),
+                   help="inner code, the SAME on both sides: rs (RS(248,216), default) or ldpc (802.11n QC-LDPC)")
+    p.add_argument("--ldpc-rate", dest="ldpc_rate", choices=("1/2", "2/3", "3/4", "5/6"),
+                   help="LDPC code rate of fixed-modulation frames (3/4); ACM frames always use 5/6 punctured")
     p.add_argument("--rate", dest="sample_rate", type=float)
     p.add_argument("--freq", dest="frequency", type=float)
     p.add_argument("--args", dest="device_args")
@@ -52,7 +56,7 @@ def common_args(p):
 
 def settings_from(a, extra):
     keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr",
-            "acm", "acm_port", "fb_link", "fb_freq", "fb_rate"] + extra
+            "acm", "acm_port", "fb_link", "fb_freq", "fb_rate", "fec", "ldpc_rate"] + extra
     over = {k: getattr(a, k) for k in keys}
     if a.sync:
         over.update(clock_source=a.sync, time_source=a.sync)
@@ -143,9 +147,13 @@ def main_tx(argv=None):
     report = {"version": __version__, "role": "tx", "mode": a.mode, "session": session,
               "settings": s.to_dict(), "capacity": cap, "started": datetime.now().isoformat(),
               "status": "FAIL"}
-    LOG.info("TX session=%d mimo=%s mod=%s interleaver=%s Fs=%.3g f=%.6g MHz, TS capacity %.0f kb/s",
+    LOG.info("TX session=%d mimo=%s mod=%s interleaver=%s fec=%s Fs=%.3g f=%.6g MHz, TS capacity %.0f kb/s",
              session, s.mimo_mode, "ACM " + s.acm_modcods if s.acm else s.modulation, s.interleaver,
-             s.sample_rate, s.frequency / 1e6, cap["ts_capacity_bps_after_rs8_8"] / 1e3)
+             cap["fec"], s.sample_rate, s.frequency / 1e6, cap["ts_capacity_bps_after_rs8_8"] / 1e3)
+    if not s.acm and s.ts_muxrate > cap["ts_capacity_bps_after_rs8_8"]:
+        LOG.warning("TS mux %d kb/s > TS capacity %.0f kb/s (%s): the queue will overflow; lower ts_muxrate, "
+                    "raise --rate or use a higher --ldpc-rate", s.ts_muxrate // 1000,
+                    cap["ts_capacity_bps_after_rs8_8"] / 1e3, cap["fec"])
     ladder = None
     if s.acm:
         LOG.info("ACM TS capacity per modulation (kb/s): %s",
@@ -168,7 +176,7 @@ def main_tx(argv=None):
         tb = gr.top_block("N321 MIMO TX", catch_exceptions=True)
         if s.acm:
             from .acm import AcmController, FeedbackReceiver
-            ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db)
+            ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db, fec=s.fec)
             if radio_fb:
                 from .acm import RadioFeedbackHandler
                 from .blocks import feedback_rx_settings
@@ -528,6 +536,10 @@ def main_rx(argv=None):
                         None if r["snr_db"] is None else round(r["snr_db"], 1),
                         None if r["evm_db"] is None else round(r["evm_db"], 1),
                         None if r["cond_db"] is None else round(r["cond_db"], 1), r["rx_rms"]))
+            if r.get("sig_recovered"):
+                line += " | SIG cứu %d" % r["sig_recovered"]
+            if r.get("fec_mismatch"):
+                line += " | KHÁC FEC %d khung (kiểm tra --fec/--ldpc-rate hai bên)" % r["fec_mismatch"]
             if s.acm:
                 line += " | ACM %s SNR_eff %s dB" % (r["modulation"], None if r["snr_eff_db"] is None
                                                       else round(r["snr_eff_db"], 1))
@@ -592,8 +604,20 @@ def main_rx(argv=None):
                        else sha256_file(ref))
             report["tx_sha256"] = tx_hash
             report["ts_identical"] = tx_hash == report["video_rx_sha256"]
+            if ref.suffix == ".json":                 # both sides must use the same inner code
+                txs = json.loads(ref.read_text()).get("settings", {})
+                tx_fec = (txs.get("fec", "rs"), txs.get("ldpc_rate", "3/4"))
+                report["fec_match"] = tx_fec[0] == s.fec and (s.fec == "rs" or s.acm or tx_fec[1] == s.ldpc_rate)
+                if not report["fec_match"]:
+                    LOG.error("FEC differs: TX %s, RX %s %s", tx_fec, s.fec, s.ldpc_rate)
         ok = v["end_received"] and v["missing_data_packets"] == 0 and info and int(info.get("nb_read_frames", 0)) > 0
-        if ok and report.get("ts_identical", True):
+        report["fec"] = {"fec": s.fec, "ldpc_rate": None if s.fec == "rs" else "5/6 punctured (ACM)" if s.acm
+                         else s.ldpc_rate,
+                         "frames_with_other_fec": r.get("fec_mismatch", 0)}
+        if r.get("fec_mismatch"):
+            LOG.error("%d frames carried the other inner code (TX --fec/--ldpc-rate differ from RX)",
+                      r["fec_mismatch"])
+        if ok and report.get("ts_identical", True) and report.get("fec_match", True):
             report["status"] = "RF_RX_VERIFIED" if a.mode == "rf" else "SIM_RX_VERIFIED"
     except Exception as exc:          # noqa: BLE001
         report["error"] = str(exc)

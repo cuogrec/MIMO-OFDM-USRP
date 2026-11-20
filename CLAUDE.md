@@ -56,6 +56,12 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
   v0.6 LTF fine timing + SIG-less recovery (`--legacy-sync` = v0.5 front end), CFO, H 2x2, CPE, MRC/SFBC/MMSE,
   batched numpy), interleavers none/block/carrier, soft errors-and-erasures RS, ACM frames
   (fixed 42 data symbols, 1/2/4/6 codewords for BPSK/QPSK/16QAM/64QAM, repeated 24-bit SIG + CRC8).
+- `ldpc.py` (v0.6) — 802.11n QC-LDPC (n 648/1296/1944, rates 1/2..5/6, base matrices of the standard), encoder
+  via the dual-diagonal structure, layered normalised min-sum (numpy, batched, early stop), `PacketCoder`: one
+  212-byte packet + CRC32 = 1728 bits over 2 shortened codewords (ACM frames: 5/6 punctured to 2016 bits).
+  `--fec rs|ldpc` (+ `--ldpc-rate`, fixed frames) on BOTH sides; SIG byte 1 bit 6 = LDPC (fixed SIG: rate in the
+  top 2 seq bits); a receiver with the other code counts `fec_mismatch`. Max-log LLRs (`modem.bit_llr`) with the
+  post-EQ SNR weights, random bit interleaver (`modem.bit_perm`). ACM thresholds per code (`acm.THRESHOLDS_BY_FEC`).
 - `inner_rs.py`, `soft_inner_rs.py`, `fec_rs.py`, `verified_fec.py`, `protocol.py` — RS(248,216) inner code,
   212-byte `OVN1` app packets, verified RS8+8 outer code (needs 10/16 shards). Wire format shared with the
   older N210 project: do not change it.
@@ -78,10 +84,13 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 23 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 27 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
+python3 tools/sim_sweep.py --fec ldpc             # LDPC part only -> results/ldpc_sweep.csv, ldpc_vs_rs.png (RS CSVs reused)
+python3 tools/acm_calibrate.py --out results/acm_thresholds.json   # ACM thresholds per inner code
+python3 tools/bench_sim.py --decoder              # LDPC decoder cw/s, Mb/s; bench_sim.py MIMO MOD RATE --fec ldpc [--acm]
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -98,7 +107,7 @@ bash scripts/start_tx.sh --freq 921e6 --tx-gain 30 --source file --input <video>
 python3 tools/plot_run.py <TX report.json> <RX report.json>     # plot_run.png into each run folder
 ```
 
-Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq` (and `--fb-freq`, `--fb-rate`).
+Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq`, `--fec`/`--ldpc-rate` (and `--fb-freq`, `--fb-rate`).
 Success = RX prints `RF_RX_VERIFIED` / `SIM_RX_VERIFIED` (video SHA-256 identical).
 
 RX report: `rx.rx_rms` / `snr_db` / `evm_db` = medians over seconds with decoded frames (`median_during_run`);
@@ -143,6 +152,11 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   before the data did. Fixed without a frame-format change: detection on used antennas, threshold 0.35, LTF
   fine timing, SIG-less recovery (RS + CRC32 decide). siso AWGN BPSK FER 1 %: 9.4 -> 5.8 dB (genie 5.5), fixed
   channel 6.1 -> 3.1 dB; QPSK unchanged (~9.7). The RX default.json got only the threshold change committed.
+- 2026-11-20 (v0.6, LDPC): ofdm321/ldpc.py (802.11n QC-LDPC, 12 codes checked against a dense H), `--fec ldpc`
+  `--ldpc-rate`, SIG bit 6 flag, max-log LLR + bit interleaver, per-code ACM thresholds (LDPC 9/12/19/24 dB).
+  LDPC 5/6 vs RS at FER 1 %: +1.4..3.9 dB AWGN, +2.3..4.4 dB alamouti Rayleigh, +6.7..13 dB siso Rayleigh;
+  ACM + LDPC +13 % mean goodput (same frame capacity). 1 MS/s real time OK (smux 64QAM tightest, x1.17 fixed 5/6,
+  x1.68 ACM). Sims PASS: --fec ldpc fixed, ACM UDP, siso ACM radio; CI runs an LDPC sim too. 27 tests.
 
 ## Next steps (agreed direction)
 
@@ -150,10 +164,12 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
    TX queue/backlog after downshifts, `plot_run.py` plots.
 2. Fix/diagnose the weak RF1 RX2 branch (swap antennas).
 3. Systematic measurements script (loss/EVM vs gain and mode, ACM vs fixed), plots for the report.
-4. LDPC instead of RS; GPSDO sync; later a DVB-S2-style single-carrier modem.
+4. Better SNR_eff estimate (noise from 18 null samples per frame smears the ACM CER curves; LDPC thresholds
+   only 1-2 dB lower although FER gains are 2-4 dB); first RF run with `--fec ldpc`; GPSDO sync; later a
+   DVB-S2-style single-carrier modem.
 
 Docs: `OFDM_N321_*/docs/` — `THIET_KE.md`, `HUONG_DAN_2_N321.md`, `GIAI_MEM_INTERLEAVING.md`, `ACM.md`,
-`PHAN_HOI_RADIO.md`, `MOT_CONG_MANG.md`. Full project report (Vietnamese) is a Claude Doc:
+`PHAN_HOI_RADIO.md`, `MOT_CONG_MANG.md`, `LDPC.md`. Full project report (Vietnamese) is a Claude Doc:
 https://claude.ai/artifact/FYd3drF6E8f9nVxDoSjdiX
 
 ## Conventions

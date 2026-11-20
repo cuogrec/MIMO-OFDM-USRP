@@ -14,9 +14,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install GNU Radio, numpy, FFmpeg (apt; no USRP needed)
+        timeout-minutes: 20             # a stuck mirror fails fast instead of eating the job timeout
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            install -y --no-install-recommends \
             gnuradio python3-numpy python3-matplotlib python3-pip python3-setuptools ffmpeg
           /usr/bin/python3 -c "import gnuradio.gr as g, numpy; print('GNU Radio', g.version(), 'numpy', numpy.__version__)"
 
@@ -30,6 +32,9 @@ jobs:
 
       - name: Two-process simulation, 10 s video at 400 kS/s (must be SIM_RX_VERIFIED)
         run: bash tools/ci_sim.sh 10 --rate 400e3
+
+      - name: Same with the LDPC inner code (--fec ldpc, must be SIM_RX_VERIFIED)
+        run: bash tools/ci_sim.sh 10 --rate 400e3 --fec ldpc
 
       - name: Keep the simulation reports
         if: always()

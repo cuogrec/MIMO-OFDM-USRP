@@ -8,7 +8,8 @@ Loop (like DVB-S2 ACM, return channel = UDP over the lab LAN):
         above the next threshold + hysteresis for `hold_s`. No report for
         `timeout_s` -> most robust modulation (link may be lost).
 Thresholds = smallest SNR_eff with codeword error rate <= 1 % in a random 2x2
-Rayleigh channel with soft RS decoding (tools/acm_calibrate.py, alamouti/siso/smux).
+Rayleigh channel (tools/acm_calibrate.py), one table per inner code: RS with soft
+decoding (v0.3, kept), LDPC (v0.6, ACM frames use the rate-5/6 code punctured to 2016 bits).
 """
 import json
 import logging
@@ -21,7 +22,13 @@ from collections import deque
 LOG = logging.getLogger(__name__)
 
 ORDER = ("bpsk", "qpsk", "16qam", "64qam")
-THRESHOLDS_DB = {"bpsk": 9.0, "qpsk": 14.0, "16qam": 20.0, "64qam": 26.0}
+THRESHOLDS_BY_FEC = {
+    "rs": {"bpsk": 9.0, "qpsk": 14.0, "16qam": 20.0, "64qam": 26.0},
+    # tools/acm_calibrate.py (alamouti, 150 frames per cell, 2026-11-20; results/acm_thresholds.json):
+    # RS gave 10/14/20/26 (BPSK is the floor of the ladder, its threshold is never used), LDPC 9/12/19/24
+    "ldpc": {"bpsk": 9.0, "qpsk": 12.0, "16qam": 19.0, "64qam": 24.0},
+}
+THRESHOLDS_DB = THRESHOLDS_BY_FEC["rs"]
 
 
 def parse_modcods(text):
@@ -33,8 +40,9 @@ def parse_modcods(text):
 
 
 class AcmController:
-    def __init__(self, modcods, margin_db=1.0, hysteresis_db=1.0, hold_s=0.5, timeout_s=1.5):
+    def __init__(self, modcods, margin_db=1.0, hysteresis_db=1.0, hold_s=0.5, timeout_s=1.5, fec="rs"):
         self.modcods = parse_modcods(modcods)
+        self.thresholds = THRESHOLDS_BY_FEC[fec]
         self.margin, self.hyst, self.hold, self.timeout = margin_db, hysteresis_db, hold_s, timeout_s
         self.index = 0
         self.snr = None
@@ -61,7 +69,7 @@ class AcmController:
             return self.modcods[self.index]
 
     def _need(self, i):
-        return THRESHOLDS_DB[self.modcods[i]] + self.margin
+        return self.thresholds[self.modcods[i]] + self.margin
 
     def update(self, snr_db, cer=0.0, rx_mod=None, now=None):
         """rx_mod: modulation of the frames the RX is decoding now. Codeword errors

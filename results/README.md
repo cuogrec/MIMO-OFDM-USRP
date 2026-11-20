@@ -35,6 +35,9 @@ không cần radio: script gọi thẳng `Modulator` / `Demodulator` (numpy), c�
 | `throughput_vs_snr.png` | Thông lượng hữu ích: điều chế cố định so với ACM (AWGN và Rayleigh) |
 | `mimo_compare.png` | So sánh 4 chế độ MIMO trên Rayleigh: FER của QPSK, 16QAM và thông lượng ACM |
 | `soft_gain.png` | Giải mềm và giải cứng trên Rayleigh; lợi ích (dB) ở FER 1% |
+| `ldpc_sweep.csv`, `acm_ldpc_sweep.csv` | v0.6: các điểm như trên với mã trong LDPC 802.11n (siso/alamouti × 4 điều chế × AWGN/Rayleigh × tỉ lệ 1/2, 2/3, 3/4, 5/6; ACM + LDPC) |
+| `ldpc_vs_rs.png`, `ldpc_summary.json` | FER và thông lượng hữu ích: LDPC so với RS, ACM + LDPC so với ACM + RS; SNR ở FER 1% và lợi ích (dB) |
+| `acm_thresholds.json` | `tools/acm_calibrate.py`: CER theo SNR_eff và ngưỡng ACM cho RS và LDPC |
 | `stage_breakdown.csv` / `.png` / `.json` | `tools/link_budget.py`: tỉ lệ lỗi từng khâu của bộ thu (dò khung, định thời, SIG, RS, genie) theo SNR, bộ thu v0.5 và v0.6 |
 
 ## SNR cần để FER ≤ 1% (dB, giải mềm)
@@ -87,6 +90,53 @@ Dấu "–" nghĩa là không đạt FER ≤ 1% trong dải 0–35 dB.
 8. **Lỗi tìm ra khi chạy sweep (đã sửa):** ở chế độ điều chế cố định 64QAM, nhánh giải mềm của bộ thu ném ngoại lệ
    (1984 bit codeword không chia hết cho 6 bit/ký hiệu) mỗi khi giải cứng thất bại. Nay đã sửa trong
    `ofdm321/modem.py`, có test `test_soft_decoding_every_modulation_fixed_frames`.
+
+## LDPC 802.11n so với RS(248,216) (v0.6, `python3 tools/sim_sweep.py --fec ldpc`)
+
+Cùng cách đo với phần trên (1000 khung mỗi điểm, bộ thu v0.6). Một gói 212 B + CRC32 nằm trong 2 codeword LDPC
+rút ngắn; tỉ lệ thực của gói: 1/2 → 0,47; 2/3 → 0,67; 3/4 → 0,73; 5/6 → 0,80 (RS: 0,87). Trong khung ACM, LDPC dùng
+mã 5/6 đục lỗ còn 2016 bit/gói (tỉ lệ 0,857), nên ACM + LDPC và ACM + RS có cùng dung lượng. Chi tiết:
+[LDPC.md](../OFDM_N321_RX/docs/LDPC.md).
+
+SNR (dB) cần để FER ≤ 1%; trong ngoặc là lợi ích so với RS (giải mềm):
+
+| | RS | LDPC 1/2 | LDPC 2/3 | LDPC 3/4 | LDPC 5/6 |
+|---|---|---|---|---|---|
+| siso AWGN, BPSK | 5,5 | 2,4 (3,1) | 2,5 (3,0) | 2,6 (2,9) | 4,1 (1,4) |
+| siso AWGN, QPSK | 9,9 | 4,2 (5,7) | 6,1 (3,8) | 6,4 (3,5) | 7,5 (2,4) |
+| siso AWGN, 16QAM | 16,2 | 8,5 (7,7) | 10,5 (5,7) | 12,2 (4,0) | 12,6 (3,6) |
+| siso AWGN, 64QAM | 22,1 | 12,4 (9,7) | 15,9 (6,2) | 17,3 (4,8) | 18,3 (3,8) |
+| alamouti Rayleigh, BPSK | 11,4 | 6,6 (4,8) | 7,9 (3,5) | 8,0 (3,4) | 8,9 (2,5) |
+| alamouti Rayleigh, QPSK | 13,1 | 8,6 (4,5) | 9,6 (3,5) | 10,3 (2,8) | 10,8 (2,3) |
+| alamouti Rayleigh, 16QAM | 20,5 | 12,6 (7,9) | 14,7 (5,8) | 16,2 (4,3) | 16,1 (4,4) |
+| alamouti Rayleigh, 64QAM | 25,3 | 16,0 (9,3) | 19,3 (6,0) | 20,6 (4,7) | 21,4 (3,9) |
+| siso Rayleigh, QPSK | 30,4 | 17,3 (13,1) | 20,0 (10,4) | 22,3 (8,1) | 23,7 (6,7) |
+| siso Rayleigh, 16QAM | – | 20,9 | 25,1 | 27,3 | 28,4 |
+
+(alamouti AWGN: LDPC 5/6 lợi 1,8 / 2,1 / 3,0 / 3,9 dB cho BPSK / QPSK / 16QAM / 64QAM; tất cả trong `ldpc_summary.json`.)
+
+**Nhận xét LDPC**
+
+1. **Ở tỉ lệ gần RS nhất (5/6, 0,80 so với 0,87), LDPC lợi 1,4–3,9 dB** trên AWGN và 2,3–4,4 dB trên Rayleigh alamouti. Lợi
+   ích tăng theo bậc điều chế: BPSK 1,4–2,5 dB, 64QAM 3,8–3,9 dB. Lý do: LLR mềm tận dụng độ tin cậy từng bit, còn
+   RS chỉ dùng quyết định cứng theo byte (giải mềm erasure gần như không thêm gì, xem nhận xét 6).
+2. **siso trên Rayleigh lợi nhiều nhất (6,7–13 dB):** interleaver bit trải mỗi codeword lên mọi sóng mang, nên LDPC
+   dùng được phân tập tần số do tiếng vọng tạo ra. RS bị sàn lỗi ở khoảng 30 dB vì các lần fade sâu, và 16QAM/64QAM
+   với RS không bao giờ đạt 1%; với LDPC 5/6, siso 16QAM đạt 1% ở 28,4 dB.
+3. **BPSK với LDPC tỉ lệ thấp chạm giới hạn của khâu dò khung:** siso AWGN 1/2, 2/3, 3/4 đều khoảng 2,5 dB, gần mức dò
+   được 99% khung (khoảng 2,8 dB, `stage_breakdown`). Muốn xuống thấp hơn thì phải cải thiện preamble (STF dài hơn),
+   không phải mã.
+4. **Đánh đổi dung lượng:** ở SNR cao, điều chế cố định tốt nhất với LDPC đạt tối đa 723 kb/s (64QAM 5/6), so với
+   RS 783 kb/s, vì LDPC tốn nhiều bit dư hơn. LDPC cho thông lượng cao hơn trong khoảng 4–20 dB (đường liền so với đường
+   đứt, hàng dưới của `ldpc_vs_rs.png`).
+5. **ACM + LDPC so với ACM + RS (cùng dung lượng khung):** thông lượng trung bình trong 10–30 dB cao hơn 13% (AWGN
+   ×1,125 cả siso lẫn alamouti; Rayleigh siso ×1,14, alamouti ×1,13), với ngưỡng mới QPSK 12 / 16QAM 19 / 64QAM 24 dB
+   (RS: 14 / 20 / 26). Ví dụ alamouti Rayleigh 22 dB: 888 so với 713 kb/s. Tỉ lệ codeword lỗi của alamouti + ACM vẫn
+   thấp (≤ 0,54% với LDPC, ≤ 0,31% với RS trong 10–35 dB).
+6. **Ngưỡng ACM chỉ thấp hơn 1–2 dB, ít hơn lợi ích FER (2–4 dB):** đường CER theo SNR_eff (`acm_thresholds.json`) bị
+   nhòe: ngay cả BPSK cũng cần SNR_eff 9 dB, dù trên AWGN BPSK + LDPC chạy được ở 4 dB. Giả thuyết (chưa kiểm
+   chứng): công suất nhiễu chỉ ước lượng từ 18 mẫu bin rỗng mỗi khung nên SNR_eff dao động mạnh. Muốn ACM tận dụng
+   hết LDPC thì nên cải thiện ước lượng này trước (lọc dài hơn, hoặc dùng pilot/LTF).
 
 ## Vì sao BPSK gần bằng QPSK ở SNR thấp (tools/link_budget.py, v0.6)
 

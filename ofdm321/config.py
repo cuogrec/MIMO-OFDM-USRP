@@ -52,6 +52,9 @@ class Settings:
     tx_rms: float = 0.10             # per TX channel, digital fc32 full scale = 1.0
     interleaver: str = "block"       # TX: none | block | carrier (RX follows the SIG field)
     soft_decoding: bool = True       # RX: reliability-ranked erasure decoding of RS(248,216)
+    fec: str = "rs"                  # inner code, BOTH sides: rs (RS(248,216)) | ldpc (802.11n QC-LDPC, v0.6)
+    ldpc_rate: str = "3/4"           # fixed frames with fec=ldpc: 1/2 | 2/3 | 3/4 | 5/6 (ACM frames: 5/6 punctured)
+    ldpc_iter: int = 20              # RX: max layered min-sum iterations
     const_every: int = 8             # RX: one constellation snapshot every N good frames (0 = off)
     # --- adaptive coding & modulation (both sides must agree on acm) ----
     acm: bool = False                # per-frame modulation chosen from RX feedback
@@ -143,6 +146,10 @@ class Settings:
             raise ValueError("tx_rms must be in (0, 0.3] to keep OFDM peaks below DAC full scale")
         if self.fec_mode != "rs8_8":
             raise ValueError("Only verified outer RS8+8 is supported")
+        if self.fec not in ("rs", "ldpc") or self.ldpc_rate not in ("1/2", "2/3", "3/4", "5/6"):
+            raise ValueError("fec must be rs or ldpc, ldpc_rate 1/2, 2/3, 3/4 or 5/6")
+        if not 1 <= self.ldpc_iter <= 100:
+            raise ValueError("ldpc_iter must be 1..100")
         if not 0.2 <= self.sync_threshold <= 0.95:
             raise ValueError("sync_threshold must be in [0.2, 0.95]")
         if self.clock_source not in ("internal", "external", "gpsdo") or \

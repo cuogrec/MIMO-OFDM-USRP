@@ -28,7 +28,8 @@ class MimoTxSource(gr.sync_block):
         s = settings
         self.acm = acm
         self.mod = Modulator(s.mimo_mode, s.modulation, s.frame_gap_samples, s.tx_rms, s.interleaver,
-                             acm=acm is not None)
+                             acm=acm is not None, fec=getattr(s, "fec", "rs"),
+                             ldpc_rate=getattr(s, "ldpc_rate", "3/4"))
         self.packets = queue.Queue(maxsize=s.queue_packets)
         self.idle = pack_packet(IDLE, session)
         self.idle_frames = {}
@@ -179,7 +180,9 @@ class MimoRxSink(gr.sync_block):
         self.acm = bool(getattr(s, "acm", False))
         self.demod = Demodulator(s.mimo_mode, s.modulation, s.sync_threshold, soft=s.soft_decoding,
                                  acm=self.acm, fine_timing=bool(getattr(s, "fine_timing", True)),
-                                 sig_recover=bool(getattr(s, "sig_recover", True)))
+                                 sig_recover=bool(getattr(s, "sig_recover", True)),
+                                 fec=getattr(s, "fec", "rs"), ldpc_rate=getattr(s, "ldpc_rate", "3/4"),
+                                 ldpc_iter=int(getattr(s, "ldpc_iter", 20)))
         self.snr_eff = None                    # filtered effective SNR (ACM feedback)
         self.modulation = None if self.acm else s.modulation
         self.mod_frames = {}
@@ -320,7 +323,7 @@ class MimoRxSink(gr.sync_block):
 
     def snapshot(self):
         with self.lock:
-            return dict(self.stats, snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
+            return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
                         rx_rms=self.rx_rms, tracking=self.expected is not None,
                         interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped,
                         acm=self.acm, modulation=self.modulation, snr_eff_db=self.snr_eff,

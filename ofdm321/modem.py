@@ -50,6 +50,7 @@ import zlib
 import numpy as np
 
 from . import inner_rs
+from . import ldpc
 from . import soft_inner_rs
 
 N_FFT, N_CP = 64, 16
@@ -75,6 +76,13 @@ INTERLEAVERS = ("none", "carrier", "block")   # id = index, sent in SIG bits 2..
 INTERLEAVE_MASK = 0xC
 SOFT_ERASURES = (2, 4, 6, 8, 12, 16, 20, 24, 28, 32)
 POWER_NORM = np.sqrt(len(ACTIVE_K) / N_FFT)   # ortho IFFT of 52 unit carriers
+# inner FEC (v0.6): RS(248,216) or 802.11n LDPC; SIG byte 1 bit 6 = LDPC (v0.5 receivers reject such frames)
+FECS = ("rs", "ldpc")
+FEC_FLAG = 0x40
+LDPC_RATES = ldpc.RATES
+DEFAULT_LDPC_RATE = "3/4"
+ACM_PACKET_BITS = NP_ACM * N_DATA       # 2016 bits per packet in every ACM frame (BPSK 1 ... 64QAM 6 packets)
+ACM_LDPC_RATE = "5/6"                    # ACM + LDPC: rate-5/6 code, shortened + punctured to 2016 bits
 
 
 def _bpsk(seed, n):
@@ -177,17 +185,33 @@ def crc16(data):
 
 
 # ----------------------------------------------------------------- geometry
-def payload_symbols(mode, modulation, acm=False):
+@lru_cache(maxsize=None)
+def ldpc_coder(rate, acm=False):
+    """PacketCoder of one 212-byte packet: fixed frames use the natural layout of `rate`; ACM frames
+    give every packet exactly ACM_PACKET_BITS (rate-5/6 code, punctured)."""
+    return ldpc.PacketCoder(ACM_LDPC_RATE, ACM_PACKET_BITS) if acm else ldpc.PacketCoder(rate)
+
+
+def packet_bits(fec="rs", ldpc_rate=DEFAULT_LDPC_RATE, acm=False):
+    """Coded bits of one application packet."""
+    if fec == "rs":
+        return CODE_BYTES * 8
+    if fec != "ldpc":
+        raise ValueError(f"fec must be one of {FECS}")
+    return ldpc_coder(ldpc_rate, acm).bits
+
+
+def payload_symbols(mode, modulation, acm=False, fec="rs", ldpc_rate=DEFAULT_LDPC_RATE):
     if acm:
         return NP_ACM
     bps = BPS[modulation]
     streams = 2 if mode == "smux" else 1
     per_symbol = N_DATA * bps * streams
-    return -(-CODE_BYTES * 8 // per_symbol)
+    return -(-packet_bits(fec, ldpc_rate) // per_symbol)
 
 
-def frame_samples(mode, modulation, gap, acm=False):
-    return (4 + payload_symbols(mode, modulation, acm)) * SYM + gap
+def frame_samples(mode, modulation, gap, acm=False, fec="rs", ldpc_rate=DEFAULT_LDPC_RATE):
+    return (4 + payload_symbols(mode, modulation, acm, fec, ldpc_rate)) * SYM + gap
 
 
 def codewords_per_frame(mode, modulation):
@@ -241,6 +265,40 @@ def bit_reliability(symbols, weight, bps):
             return np.stack(r, axis=1)
         out = np.concatenate([axis(symbols.real), axis(symbols.imag)], axis=1)
     return (out * weight[:, None]).reshape(-1)
+
+
+def bit_llr(symbols, weight, bps):
+    """Max-log LLR of every bit (positive = bit 0), same bit order as modulate()/demodulate().
+    weight = post-equaliser SNR of each symbol (1 / complex noise variance), as from _combine()."""
+    if bps == 1:
+        return 4.0 * symbols.real * weight
+    half = bps // 2
+    lv = _levels(half) / np.sqrt(2)                                  # level[value of the axis bits]
+    val = np.arange(1 << half)
+    bits = (val[:, None] >> np.arange(half)[::-1]) & 1               # (M, half), MSB first
+
+    def axis(v):
+        d = (v[:, None] - lv[None, :]) ** 2
+        return np.stack([d[:, bits[:, j] == 1].min(axis=1) - d[:, bits[:, j] == 0].min(axis=1)
+                         for j in range(half)], axis=1)
+    out = np.concatenate([axis(symbols.real), axis(symbols.imag)], axis=1)
+    return (out * weight[:, None]).reshape(-1)
+
+
+@lru_cache(maxsize=None)
+def bit_perm(n):
+    """Bit interleaver between LDPC and the mapper: coded bit perm[i] is sent in position i."""
+    perm = np.random.RandomState(0xB175).permutation(n)
+    perm.setflags(write=False)
+    return perm
+
+
+def ldpc_info_bits(packet):
+    """212-byte packet -> 1728 scrambled info bits (packet + CRC32)."""
+    if len(packet) != MESSAGE_BYTES - 4:
+        raise ValueError("Application packet must be 212 bytes")
+    msg = np.frombuffer(packet + struct.pack(">I", zlib.crc32(packet)), np.uint8)
+    return np.unpackbits(msg ^ tables()["scramble"][:MESSAGE_BYTES])
 
 
 @lru_cache(maxsize=1)
@@ -308,18 +366,22 @@ def decode_codeword(raw, reliability=None):
 
 # ----------------------------------------------------------------- transmitter
 class Modulator:
-    def __init__(self, mode, modulation, gap=80, tx_rms=0.1, interleaver="block", acm=False):
+    def __init__(self, mode, modulation, gap=80, tx_rms=0.1, interleaver="block", acm=False, fec="rs",
+                 ldpc_rate=DEFAULT_LDPC_RATE):
         if interleaver not in INTERLEAVERS:
             raise ValueError(f"interleaver must be one of {INTERLEAVERS}")
-        self.acm = acm
-        if acm:
-            interleaver = "none"          # ACM frames: codewords in plain order
+        if fec not in FECS or ldpc_rate not in LDPC_RATES:
+            raise ValueError(f"fec must be one of {FECS}, ldpc_rate one of {LDPC_RATES}")
+        self.acm, self.fec, self.ldpc_rate = acm, fec, ldpc_rate
+        self.coder = ldpc_coder(ldpc_rate, acm) if fec == "ldpc" else None
+        if acm or fec == "ldpc":
+            interleaver = "none"          # ACM frames: codewords in plain order; LDPC: bit interleaver
         self.mode, self.modulation = mode, modulation
         self.interleaver = interleaver
         self.perm = None if acm else interleave_perm(mode, modulation, interleaver)
         self.bps = BPS[modulation]
         self.n_tx = 2 if mode in ("alamouti", "smux") else 1
-        self.np = payload_symbols(mode, modulation, acm)
+        self.np = payload_symbols(mode, modulation, acm, fec, ldpc_rate)
         self.gap = gap
         self.scale = tx_rms
         self.seq = 0
@@ -356,13 +418,15 @@ class Modulator:
         return grid
 
     def sig_bits(self, seq, modulation=None):
-        flag = INTERLEAVERS.index(self.interleaver) << 2 | (ACM_FLAG if self.acm else 0)
+        flag = INTERLEAVERS.index(self.interleaver) << 2 | (ACM_FLAG if self.acm else 0) \
+            | (FEC_FLAG if self.coder else 0)
         mod = MOD_CODES[modulation or self.modulation]
         if self.acm:
             b24 = acm_sig_info(MODE_CODES[self.mode] << 4 | mod | flag, seq)
             return np.concatenate([b24, b24])
-        head = bytes([SIG_MAGIC, MODE_CODES[self.mode] << 4 | mod | flag]) \
-            + struct.pack(">H", seq & 0xFFFF)
+        # LDPC fixed frames: the top 2 bits of the 16-bit sequence number carry the code rate
+        seq = LDPC_RATES.index(self.ldpc_rate) << 14 | seq & 0x3FFF if self.coder else seq & 0xFFFF
+        head = bytes([SIG_MAGIC, MODE_CODES[self.mode] << 4 | mod | flag]) + struct.pack(">H", seq)
         data = head + struct.pack(">H", crc16(head))
         return np.unpackbits(np.frombuffer(data, np.uint8))
 
@@ -371,10 +435,12 @@ class Modulator:
         ACM: `packet` is a list of codewords_per_frame(mode, modulation) packets."""
         modulation = modulation or self.modulation
         bps = BPS[modulation]
-        if self.acm:
-            bits = np.unpackbits(np.concatenate([encode_packet(p) for p in packet]))
+        packets = packet if self.acm else [packet]
+        if self.coder:
+            bits = self.coder.encode(np.stack([ldpc_info_bits(p) for p in packets])).reshape(-1)
+            bits = bits[bit_perm(bits.size)]
         else:
-            bits = np.unpackbits(encode_packet(packet))
+            bits = np.unpackbits(np.concatenate([encode_packet(p) for p in packets]))
         cap = self.np * N_DATA * bps * (2 if self.mode == "smux" else 1)
         if bits.size > cap:
             raise ValueError("too many codewords for this frame")
@@ -414,8 +480,14 @@ class Demodulator:
     """Stateless per-frame demodulation given the frame start index."""
 
     def __init__(self, mode, modulation, threshold=0.35, backoff=3, soft=True, soft_cpu=0.3, acm=False,
-                 fine_timing=True, sig_recover=True):
+                 fine_timing=True, sig_recover=True, fec="rs", ldpc_rate=DEFAULT_LDPC_RATE, ldpc_iter=20):
+        if fec not in FECS or ldpc_rate not in LDPC_RATES:
+            raise ValueError(f"fec must be one of {FECS}, ldpc_rate one of {LDPC_RATES}")
         self.mode, self.modulation = mode, modulation
+        self.fec, self.ldpc_rate, self.ldpc_iter = fec, ldpc_rate, ldpc_iter
+        self.coder = ldpc_coder(ldpc_rate, acm) if fec == "ldpc" else None
+        self.fec_flag = FEC_FLAG if self.coder else 0
+        self.fec_mismatch = 0             # frames with a valid SIG of the other inner code / LDPC rate
         self.fine_timing, self.sig_recover = fine_timing, sig_recover
         self.acm = acm
         self.soft = soft
@@ -426,17 +498,17 @@ class Demodulator:
         self.bps = BPS[modulation]
         self.n_tx = 2 if mode in ("alamouti", "smux") else 1
         self.n_rx = 1 if mode == "siso" else 2
-        self.np = payload_symbols(mode, modulation, acm)
+        self.np = payload_symbols(mode, modulation, acm, fec, ldpc_rate)
         self.threshold = threshold
         self.backoff = backoff
         self.body_len = (4 + self.np) * SYM
         self.const_every = 0              # >0: attach equalised symbols to every N-th good frame
-        self.n_code = -(-CODE_BYTES * 8 // self.bps)    # symbols holding one codeword (64QAM: 331)
+        self.n_code = -(-packet_bits(fec, ldpc_rate) // self.bps)   # symbols holding one packet (RS 64QAM: 331)
         self.n_const = 1008 if acm else self.n_code      # points per constellation snapshot
         self.keep_raw = False             # measurements: info["raw"] = hard-decided codeword bytes
         # mode byte of the last good SIG (interleaver / ACM modulation), used by sig_recover
-        self.sig_hint = MODE_CODES[mode] << 4 | MOD_CODES[modulation] | (
-            ACM_FLAG if acm else INTERLEAVERS.index("block") << 2)
+        self.sig_hint = MODE_CODES[mode] << 4 | MOD_CODES[modulation] | self.fec_flag | (
+            ACM_FLAG if acm else 0 if self.coder else INTERLEAVERS.index("block") << 2)
 
     # -- synchronisation ------------------------------------------------
     def schmidl_cox(self, x):
@@ -544,18 +616,25 @@ class Demodulator:
         Fs = self._cpe(F[:, :, 3:4], H, 0)
         sig_eq, sig_w = self._combine(Fs, H, noise, "sfbc" if self.n_tx == 2 else "mrc")
         sig_eq = sig_eq[:, 0]
-        mode_byte = MODE_CODES[self.mode] << 4 | MOD_CODES[self.modulation]
+        mode_byte = MODE_CODES[self.mode] << 4 | MOD_CODES[self.modulation] | self.fec_flag
         if self.acm:            # repeated 24-bit SIG, soft combined; any modulation, plain order
             soft = sig_eq.real * np.broadcast_to(sig_w[:, 0], sig_eq.shape)
             b = np.packbits(((soft[:, :24] + soft[:, 24:]) < 0).astype(np.uint8), axis=1)
             heads = [bytes([SIG_MAGIC, b[k, 0], 0, b[k, 1]]) for k in range(K)]
-            valid = [crc8(bytes(b[k, :2])) == b[k, 2] and b[k, 0] & 0xF0 == ACM_FLAG | MODE_CODES[self.mode] << 4
-                     and b[k, 0] & INTERLEAVE_MASK == 0 for k in range(K)]
+            crc_ok = [crc8(bytes(b[k, :2])) == b[k, 2] and b[k, 0] & INTERLEAVE_MASK == 0 for k in range(K)]
+            want = ACM_FLAG | self.fec_flag | MODE_CODES[self.mode] << 4
+            valid = [crc_ok[k] and b[k, 0] & 0xF0 == want for k in range(K)]
+            self.fec_mismatch += int(sum(crc_ok[k] and b[k, 0] & 0xF0 == want ^ FEC_FLAG for k in range(K)))
         else:
             sig_bytes = np.packbits((sig_eq.real < 0).astype(np.uint8), axis=1)
             heads = [sig_bytes[k].tobytes() for k in range(K)]
-            valid = [d[0] == SIG_MAGIC and (d[1] & ~INTERLEAVE_MASK) == mode_byte and (d[1] >> 2 & 3) < 3
-                     and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0] for d in heads]
+            rate_bits = LDPC_RATES.index(self.ldpc_rate) if self.coder else None
+            valid, crc_ok = [], []
+            for d in heads:
+                ok = d[0] == SIG_MAGIC and (d[1] >> 2 & 3) < 3 and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0]
+                same = (d[1] & ~INTERLEAVE_MASK) == mode_byte and (rate_bits is None or d[2] >> 6 == rate_bits)
+                valid.append(ok and same)
+                self.fec_mismatch += ok and not same and (d[1] & ~INTERLEAVE_MASK & ~FEC_FLAG) == mode_byte & ~FEC_FLAG
         if known_sig is not None:
             for k, h in enumerate(known_sig):
                 if h is not None:
@@ -582,6 +661,8 @@ class Demodulator:
         snr_eff = -10 * np.log10(np.mean(1.0 / np.maximum(weight.reshape(K, -1), 1e-6), axis=1))
         weight = weight * derate.reshape((K, self.np) + (1,) * (weight.ndim - 2))
         weight = weight.reshape(K, -1)
+        if self.coder:
+            return self._ldpc_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered)
         if self.acm:
             return self._acm_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered)
         for k in range(K):
@@ -682,6 +763,63 @@ class Demodulator:
                 if self.n_tx == 2:
                     info["cond_db"] = self._cond(H[k])
             results.append((packets, info))
+        return results
+
+    def _ldpc_decode(self, eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered):
+        """LDPC frames (fixed or ACM): LLRs of every valid frame, bit de-interleaving, one batched
+        LDPC decode for all packets of all frames, CRC32 per packet."""
+        K, cb = len(heads), self.coder.bits
+        jobs, llrs = {}, []
+        for k in range(K):
+            if not valid[k]:
+                continue
+            modulation = MOD_NAMES[heads[k][1] & 3] if self.acm else self.modulation
+            bps = BPS[modulation]
+            npk = codewords_per_frame(self.mode, modulation) if self.acm else 1
+            nb = npk * cb
+            nsym = -(-nb // bps)
+            raw = bit_llr(eq[k, :nsym], weight[k, :nsym], bps)[:nb]
+            llr = np.empty_like(raw)
+            llr[bit_perm(nb)] = raw
+            jobs[k] = (modulation, bps, npk, nsym, len(llrs))
+            llrs.append(llr.reshape(npk, cb))
+        if llrs:
+            info_bits, cw_ok, iters = self.coder.decode(np.concatenate(llrs), self.ldpc_iter)
+            msgs = np.packbits(info_bits, axis=1) ^ tables()["scramble"][:MESSAGE_BYTES]
+        results, row = [], 0
+        for k in range(K):
+            if k not in jobs:
+                results.append((None, {"reason": "sig", "cfo": cfo[k], "seq": None}))
+                continue
+            modulation, bps, npk, nsym, _ = jobs[k]
+            packets, reasons = [], []
+            for j in range(row, row + npk):
+                p = _check(msgs[j].tobytes())
+                reasons.append("ok" if p is not None else "crc" if cw_ok[j] else "rs")
+                if p is not None:
+                    packets.append(p)
+            it = int(iters[row:row + npk].sum())
+            row += npk
+            if recovered[k] and not packets:
+                results.append((None, {"reason": "sig", "cfo": cfo[k], "seq": None}))
+                continue
+            seq = None if recovered[k] else struct.unpack(">H", heads[k][2:4])[0] & (0xFFFF if self.acm else 0x3FFF)
+            info = {"reason": "ok" if packets else reasons[0], "corrected": 0, "soft_erasures": 0, "cfo": cfo[k],
+                    "interleaver": "none", "seq": seq, "fec": "ldpc", "ldpc_iter": it}
+            if self.acm:
+                info.update(reasons=reasons, modulation=modulation, snr_eff_db=float(snr_eff[k]))
+            if recovered[k]:
+                info["sig_recovered"] = True
+            e = eq[k, :nsym]
+            self.count = getattr(self, "count", 0) + 1
+            if self.const_every and packets and self.count % self.const_every == 0:
+                info["const"] = e[:self.n_const].astype(np.complex64)
+            if self.count % 8 == 1:
+                p = float(np.mean(np.sum(np.abs(H[k, :, :self.n_tx][..., DATA_BINS]) ** 2, axis=1)))
+                info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(e, bps))
+                if self.n_tx == 2:
+                    info["cond_db"] = self._cond(H[k])
+            results.append((packets if self.acm else (packets[0] if packets else None), info))
         return results
 
     def _soft_allowed(self):

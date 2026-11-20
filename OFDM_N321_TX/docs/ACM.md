@@ -18,12 +18,17 @@ RX: ◄────────────────────┴───�
 **Khung ACM có độ dài cố định:** 4 symbol mào đầu + 42 symbol dữ liệu + khe 80 mẫu = 3760 mẫu. Mỗi khung chứa
 số codeword RS(248,216) tùy theo điều chế:
 
-| Điều chế | Codeword/khung (siso, simo, alamouti) | smux | TS sau RS8+8 ở 1 MS/s (alamouti) | Ngưỡng SNR_eff (CER ≤ 1%) |
-|---|---|---|---|---|
-| BPSK | 1 | 2 | 200 kb/s | 9 dB |
-| QPSK | 2 | 4 | 400 kb/s | 14 dB |
-| 16QAM | 4 | 8 | 800 kb/s | 20 dB |
-| 64QAM | 6 | 12 | 1200 kb/s | 26 dB |
+| Điều chế | Codeword/khung (siso, simo, alamouti) | smux | TS sau RS8+8 ở 1 MS/s (alamouti) | Ngưỡng SNR_eff, RS | Ngưỡng SNR_eff, LDPC (v0.6) |
+|---|---|---|---|---|---|
+| BPSK | 1 | 2 | 200 kb/s | 9 dB | 9 dB |
+| QPSK | 2 | 4 | 400 kb/s | 14 dB | 12 dB |
+| 16QAM | 4 | 8 | 800 kb/s | 20 dB | 19 dB |
+| 64QAM | 6 | 12 | 1200 kb/s | 26 dB | 24 dB |
+
+Với `--fec ldpc` (v0.6), mỗi gói trong khung ACM vẫn chiếm đúng chỗ của một codeword RS (2016 bit), nên số gói/khung
+và dung lượng không đổi; mã là LDPC 802.11n tỉ lệ 5/6 rút ngắn + đục lỗ (xem [LDPC.md](LDPC.md)). Bảng ngưỡng riêng
+cho LDPC đo bằng `tools/acm_calibrate.py` (`results/acm_thresholds.json`); BPSK là bậc thấp nhất nên ngưỡng của nó
+không được dùng.
 
 Vì độ dài khung không đổi, phần đồng bộ của máy thu giữ nguyên; máy thu chỉ đọc điều chế trong SIG rồi giải điều chế theo đó.
 

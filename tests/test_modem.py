@@ -5,7 +5,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))  # repo root
-from ofdm321.modem import (Demodulator, Modulator, demodulate, modulate, frame_samples,  # noqa: E402
+from ofdm321.modem import (Demodulator, Modulator, demodulate, modulate, frame_samples, codewords_per_frame,  # noqa: E402,E501
                            interleave_perm, INTERLEAVERS, DATA_BINS, N_FFT, SYM)
 
 MODES = ("siso", "simo", "alamouti", "smux")
@@ -410,6 +410,103 @@ def test_bpsk_threshold_separates_from_qpsk():
         lost[mod] = bad
     assert lost["bpsk"] <= 1 and lost["qpsk"] >= 30, lost
     print("  siso AWGN 3.5 dB, 60 frames lost:", lost)
+
+
+def test_ldpc_codes_against_dense_parity_check():
+    """All 12 802.11n codes: H built independently from the base matrix (identity rolled by the shift) gives a
+    zero syndrome for encoded words; noiseless and noisy decoding; a frozen codeword checksum."""
+    import zlib
+    from ofdm321 import ldpc
+    rng = np.random.default_rng(31)
+    for (n, rate) in ldpc._BASE:
+        c = ldpc.code(n, rate)
+        B, Z = ldpc.base_matrix(n, rate), n // 24
+        Hd = np.zeros((B.shape[0] * Z, n), np.uint8)
+        for i, j in zip(*np.nonzero(B >= 0)):
+            Hd[i * Z:(i + 1) * Z, j * Z:(j + 1) * Z] = np.roll(np.eye(Z, dtype=np.uint8), B[i, j], axis=1)
+        u = rng.integers(0, 2, (4, c.k))
+        cw = c.encode(u)
+        assert np.array_equal(cw[:, :c.k], u) and not ((Hd.astype(int) @ cw.T) % 2).any(), (n, rate)
+        assert np.linalg.matrix_rank(Hd.astype(float)) >= Hd.shape[0] - 1      # full rank (GF(2) rank <= real)
+        bits, ok, it = c.decode(8.0 * (1 - 2.0 * cw))
+        assert ok.all() and np.array_equal(bits, cw) and not it.any()
+    c = ldpc.code(648, "1/2")
+    assert not c.encode(np.zeros((1, c.k))).any()                           # all-zero word
+    e0 = np.zeros((1, c.k), np.uint8)
+    e0[0, 0] = 1
+    assert zlib.crc32(np.packbits(c.encode(e0)).tobytes()) == FROZEN_LDPC_CRC, \
+        hex(zlib.crc32(np.packbits(c.encode(e0)).tobytes()))
+    # n=1944 rate 1/2, BPSK AWGN Eb/N0 3 dB: every codeword corrected (802.11n: FER ~1e-4 there)
+    c = ldpc.code(1944, "1/2")
+    cw = c.encode(rng.integers(0, 2, (40, c.k)))
+    sig = np.sqrt(1 / (2 * 0.5 * 10 ** 0.3))
+    y = (1 - 2.0 * cw) + sig * rng.standard_normal(cw.shape)
+    assert (y < 0).astype(int).sum() > 1000                                  # many raw errors
+    bits, ok, it = c.decode(2 * y / sig ** 2)
+    assert ok.all() and np.array_equal(bits, cw), (ok.sum(), it.max())
+
+
+FROZEN_LDPC_CRC = 0x7D29063B          # 648 rate 1/2, info = unit vector e0 (regression guard)
+
+
+def test_bit_llr_matches_hard_decisions():
+    from ofdm321.modem import bit_llr
+    rng = np.random.default_rng(32)
+    for bps in (1, 2, 4, 6):
+        b = rng.integers(0, 2, bps * 400).astype(np.uint8)
+        s = modulate(b, bps)
+        y = s + 0.02 * (rng.standard_normal(s.shape) + 1j * rng.standard_normal(s.shape))
+        llr = bit_llr(y, np.full(len(y), 10.0), bps)
+        assert np.array_equal((llr < 0).astype(np.uint8), demodulate(y, bps)), bps
+        assert np.array_equal((llr < 0).astype(np.uint8), b), bps
+    y = np.array([0.3 + 0j, -0.7 + 0j])
+    assert np.allclose(bit_llr(y, np.array([2.0, 2.0]), 1), 4 * y.real * 2)  # BPSK: 4 y SNR
+
+
+def test_ldpc_frames_every_mode_and_fec_flag_in_sig():
+    rng = np.random.default_rng(33)
+    H = np.array([[1, 0.3], [0.2, 1]])
+    for acm in (False, True):
+        for mode in MODES:
+            for mod in ("bpsk", "qpsk", "16qam", "64qam"):
+                rates = ("3/4",) if acm else ("1/2", "2/3", "3/4", "5/6")
+                for rate in rates:
+                    tx = Modulator(mode, mod, acm=acm, fec="ldpc", ldpc_rate=rate)
+                    rx = Demodulator(mode, mod, acm=acm, fec="ldpc", ldpc_rate=rate)
+                    n = codewords_per_frame(mode, mod) if acm else 1
+                    pk = [rng.integers(0, 256, 212, dtype=np.uint8).tobytes() for _ in range(n)]
+                    y = channel(tx.frame(pk if acm else pk[0], mod), H, 35, rng)
+                    (out, info), = rx.demodulate_batch(y, [rx.find(y)[0]], [None])
+                    assert (out if acm else [out]) == pk and info["fec"] == "ldpc", (acm, mode, mod, rate, info)
+    # the other inner code / another LDPC rate: rejected as SIG and counted, never mis-decoded
+    pkt = bytes(range(212))
+    for txk, rxk in ((dict(fec="ldpc"), dict(fec="rs")), (dict(fec="rs"), dict(fec="ldpc")),
+                     (dict(fec="ldpc", ldpc_rate="1/2"), dict(fec="ldpc", ldpc_rate="3/4")),
+                     (dict(fec="ldpc", acm=True), dict(fec="rs", acm=True))):
+        acm = txk.get("acm", False)
+        tx, rx = Modulator("siso", "qpsk", **txk), Demodulator("siso", "qpsk", **rxk)
+        rx.sig_recover = False
+        y = channel(tx.frame([pkt, pkt] if acm else pkt), np.eye(2), 30, rng)
+        (out, info), = rx.demodulate_batch(y, [rx.find(y)[0]], [None])
+        assert out is None and info["reason"] == "sig" and rx.fec_mismatch == 1, (txk, rxk, info)
+
+
+def test_ldpc_beats_rs_at_low_snr():
+    """siso AWGN BPSK at a SNR where RS(248,216) loses most frames: LDPC 1/2 and 5/6 deliver them."""
+    lost = {}
+    for fec, rate in (("rs", "3/4"), ("ldpc", "5/6"), ("ldpc", "1/2")):
+        rng = np.random.default_rng(34)
+        tx = Modulator("siso", "bpsk", fec=fec, ldpc_rate=rate)
+        rx = Demodulator("siso", "bpsk", fec=fec, ldpc_rate=rate)
+        bad = 0
+        for _ in range(40):
+            pkt = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+            y = channel(tx.frame(pkt), np.eye(2), 1.5, rng)
+            s0, p = rx.find(y)
+            bad += s0 is None or rx.demodulate(y, s0, p)[0] != pkt
+        lost[f"{fec}{'' if fec == 'rs' else rate}"] = bad
+    assert lost["rs"] >= 20 and lost["ldpc5/6"] <= 4 and lost["ldpc1/2"] <= 1, lost
+    print("  siso AWGN BPSK 1.5 dB (4.5 dB in tools terms), 40 frames lost:", lost)
 
 
 def test_ts_splice_helpers():
