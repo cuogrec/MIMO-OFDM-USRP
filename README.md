@@ -73,6 +73,7 @@ Hướng dẫn chi tiết:
 - [Điều chế thích ứng (ACM)](OFDM_N321_RX/docs/ACM.md)
 - [Phản hồi ACM qua sóng radio, không cần mạng giữa hai PC](OFDM_N321_RX/docs/PHAN_HOI_RADIO.md)
 - [PC chỉ có một cổng mạng: N321 #1 tự phát file IQ](OFDM_N321_TX/docs/MOT_CONG_MANG.md)
+- [Đo đặc trưng hệ thống bằng mô phỏng: FER, thông lượng, ACM theo SNR](results/README.md)
 
 ## Trạng thái
 

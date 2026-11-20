@@ -77,8 +77,9 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 19 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 20 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
+python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -130,6 +131,11 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
 - 2026-11-20 (no hardware): one shared `ofdm321` package at the repo root + `pyproject.toml`;
   tests/ and tools/ at the root (symlinks in the folders); GRC blocks find the shared package; sim_rx/sim_tx and
   fbradio sims SIM_RX_VERIFIED, all 4 GRC flowgraphs compile with grcc.
+- 2026-11-20: GitHub CI (tests + 10 s two-process sim) green; RX report rx_rms/snr/evm are medians while
+  receiving. tools/sim_sweep.py -> results/ (CSV, PNG, README): alamouti best on Rayleigh (QPSK FER 1% at
+  13.3 dB vs siso 32.9); ACM +12-16 % over the best fixed modulation on Rayleigh, but ACM thresholds are too
+  conservative on AWGN (0.84-0.90 x best fixed); ACM + smux on Rayleigh loses up to 30 % of codewords; soft RS
+  shows no measurable gain on these channels. Fixed: fixed-mode 64QAM soft decoding crashed (1984 bits % 6).
 
 ## Next steps (agreed direction)
 

@@ -326,6 +326,22 @@ def test_report_uses_medians_while_receiving():
     assert r["rx_rms"] == 0.0001 and r["median_during_run"]["seconds"] == 0
 
 
+def test_soft_decoding_every_modulation_fixed_frames():
+    """Fixed (non-ACM) frames, soft RS at a SNR where hard decoding fails: no exception for any modulation
+    (64QAM: 1984 codeword bits are not a multiple of 6 bits/symbol; the soft path used to crash)."""
+    rng = np.random.default_rng(31)
+    for mod, snr in (("bpsk", 2), ("qpsk", 6), ("16qam", 10), ("64qam", 15)):
+        for mode in ("siso", "alamouti"):
+            tx, rx = Modulator(mode, mod), Demodulator(mode, mod, soft=True, soft_cpu=1e9)
+            for _ in range(6):
+                pkt = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+                y = channel(tx.frame(pkt), np.eye(2), snr, rng)
+                s0, p = rx.find(y)
+                if s0 is not None:
+                    out, info = rx.demodulate(y, s0, p)        # must not raise
+                    assert out is None or out == pkt
+
+
 def _ts(pid, cc, payload=True, keyframe=False):
     """Synthetic 188-byte TS packet (PUSI + random access indicator for a keyframe)."""
     afc = (1 if payload else 0) | (2 if keyframe or not payload else 0)

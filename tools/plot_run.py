@@ -81,8 +81,9 @@ def main(argv=None):
         for h in r.get("history", []):
             h["_x"] = h["t_wall"] - t0
 
-    fig, axs = plt.subplots(4, 1, figsize=(12, 11), sharex=True)
-    ax_snr, ax_mod, ax_rate, ax_loss = axs
+    fig, axs = plt.subplots(5, 1, figsize=(12, 13), sharex=True,
+                            gridspec_kw={"height_ratios": [3, 2, 3, 1.4, 2.4]})
+    ax_snr, ax_mod, ax_rate, ax_queue, ax_loss = axs
 
     # 1. SNR
     if rx:
@@ -146,10 +147,12 @@ def main(argv=None):
             if pts:
                 stairs(ax_rate, *zip(*pts), ls=":", label="dung lượng TS của điều chế đang dùng")
         q = [(r["_x"], r["queue"]) for r in h]
-        if q:
-            ax_q = ax_rate.twinx()
-            ax_q.plot(*zip(*q), color="tab:gray", alpha=0.5, lw=1)
-            ax_q.set_ylabel("hàng đợi TX (gói)", color="tab:gray")
+        if q:                       # own panel: one y-axis per chart
+            ax_queue.plot(*zip(*q), color="#52514e", lw=1.2)
+    ax_queue.set_ylabel("gói")
+    ax_queue.set_title("Hàng đợi phát (TX)")
+    ax_queue.set_ylim(bottom=0)
+    ax_queue.grid(True, alpha=0.3)
     ax_rate.set_ylabel("kb/s")
     ax_rate.set_title("Bitrate video")
     ax_rate.grid(True, alpha=0.3)

@@ -424,7 +424,7 @@ class Demodulator:
         self.backoff = backoff
         self.body_len = (4 + self.np) * SYM
         self.const_every = 0              # >0: attach equalised symbols to every N-th good frame
-        self.n_code = CODE_BYTES * 8 // self.bps
+        self.n_code = -(-CODE_BYTES * 8 // self.bps)    # symbols holding one codeword (64QAM: 331)
         self.n_const = 1008 if acm else self.n_code      # points per constellation snapshot
 
     # -- synchronisation ------------------------------------------------
@@ -527,7 +527,7 @@ class Demodulator:
             if perm is not None:
                 eq[k] = eq[k][perm]
                 weight[k] = weight[k][perm]
-        n_code = CODE_BYTES * 8 // self.bps
+        n_code = -(-CODE_BYTES * 8 // self.bps)   # ceil: 1984 bits are not a multiple of 6 (64QAM)
         bits = demodulate(eq.reshape(-1), self.bps).reshape(K, -1)[:, :CODE_BYTES * 8]
         raw = np.packbits(bits, axis=1)
         results = []
@@ -539,7 +539,7 @@ class Demodulator:
             rel = None
             if self.soft and self._soft_allowed():
                 rel = (lambda k=k: bit_reliability(eq[k, :n_code], weight[k, :n_code], self.bps)
-                       .reshape(CODE_BYTES, 8).min(axis=1))
+                       [:CODE_BYTES * 8].reshape(CODE_BYTES, 8).min(axis=1))
             t0 = time.perf_counter()
             packet, corrected, reason, erasures = decode_codeword(raw[k], rel)
             if rel is not None and (erasures or reason != "ok"):
