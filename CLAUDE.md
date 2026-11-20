@@ -93,12 +93,16 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-19, v0.5.0)
+## Status (2026-11-20, v0.5.0)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
   EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
 - RF two N321, SISO + ACM + radio feedback (19/11), fb gains 30/60 (now the defaults): RF_RX_VERIFIED, 0 lost,
   16QAM 89 % of frames, SNR 24 dB, EVM −20 dB. Video was fixed 260 kb/s, so most 16QAM frames were IDLE.
+  Run `OFDM_N321_RX/runs/20261119_173835_rx_rf_siso_qpsk` (code v0.4.0): RX gain 50, 921/922.7 MHz, 9624 frames
+  (16QAM 8552, QPSK 527, BPSK 545), 35806 codewords ok, rs 1, lost 1, DATA 5185/5185, SNR_eff 23.6 dB.
+  rx_rms only 0.00035 (guide 0.005–0.2) yet SNR 24 dB: RX level is low, check before raising modulation.
+  Earlier 19/11 RF attempts (16:41, 16:49) FAILED at low SNR/EVM before antennas/gains were settled.
 - v0.5 (simulation only so far): video bitrate follows ACM (BPSK 150 / QPSK 300 / 16QAM 600 / 64QAM 900 kb/s TS
   at 1 MS/s); resend on ACM downshift + RX reorder buffer; UDP feedback 0.02 s. Sim steps:30,22,14,22,30:8 at
   1 MS/s: alamouti+UDP and siso+radio both SIM_RX_VERIFIED, 0 missing, 4 bitrate switches; mean TS 525 kb/s vs
@@ -107,8 +111,10 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   "channel A = RF0, B = RF1"; v0.5 in 5 commits (adaptive video, history + plot, watchdog, port names, docs);
   tests 11 -> 18, all PASS; ofdm321/tests/tools identical in the 3 folders.
 - Project report (Claude Doc) updated to v0.5 the same day (v0.4 + v0.5 sections, RF 19/11 row, plot_run.png
-  of the alamouti+UDP sim). The 19/11 RF row lacks frame count, cond, rx_rms and RX gain: fill them from that
-  run's report.json when available.
+  of the alamouti+UDP sim). Its 19/11 RF row still shows "—" for frames, rx_rms and RX gain: the values are
+  now known (run above), the doc is not yet updated.
+- 2026-11-20: status check, no code change. Git clean (only the local default.json edit), in sync with
+  origin/main; 18/18 tests PASS; the 3 ofdm321 copies identical. No v0.5 run on RF yet.
 
 ## Next steps (agreed direction)
 
