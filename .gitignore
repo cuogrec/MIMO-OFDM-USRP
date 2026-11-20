@@ -6,3 +6,6 @@ runs/*
 *.mp4
 *.npz
 *.zip
+/OFDM_N321_*/runs/
+*.egg-info/
+build/

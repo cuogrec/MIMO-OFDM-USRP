@@ -24,7 +24,10 @@ trước khi quyết định bit (QPSK 992 điểm/khung, 16QAM 496; smux gồm 
 để tắt. Ảnh chạy mô phỏng: `../docs/img/grc_rx_gui_alamouti.png`. Cách đọc chòm sao: xem
 `docs/HUONG_DAN_2_N321.md`, mục 6.
 
-Các khối [E] gọi gói `ofdm321` của chính folder này, nên thư mục `grc/` phải nằm trong `OFDM_N321_RX`.
+Các khối [E] dùng gói chung `ofdm321` ở gốc repo. Nếu đã cài (`pip install -e .`, có trong
+`scripts/setup_ubuntu.sh`) thì chạy ở đâu cũng được. Nếu chưa cài, khối tự tìm theo thứ tự: biến môi trường
+`OFDM_N321_DIR` (đường dẫn gốc repo), rồi các thư mục cha của file sinh ra từ `.grc`, rồi `~/MIMO-OFDM-USRP`
+và `~/Desktop/MIMO-OFDM-USRP[-main]`.
 
 Xem video thu trong khi chạy: `ffplay -fflags nobuffer udp://127.0.0.1:5002`. Khi dừng, khối [E2] in thống kê
 `ok / soft / sig / rs / crc`, SNR, EVM, cond; khối [E3] in số gói DATA, số gói thiếu và đã nhận END chưa.

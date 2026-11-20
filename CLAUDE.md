@@ -31,9 +31,17 @@ Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0
 
 ## Repo layout
 
-Three self-contained folders, each with its OWN copy of the `ofdm321` package. When you change
-`ofdm321/*.py`, `tests/`, `tools/` or shared docs, change `OFDM_N321_RX` and copy the same files to
-`OFDM_N321_TX` and `OFDM_N321_MIMO` (they must stay identical; check with `diff -rq`).
+ONE shared package `ofdm321/` at the repo root (`pyproject.toml`, `pip install -e .`, done by
+`scripts/setup_ubuntu.sh` with `--user --break-system-packages --no-build-isolation`). `tests/` and `tools/` are at
+the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`, `grc/`, `run_*.py` (+ `runs/`);
+`OFDM_N321_*/tools` and `OFDM_N321_*/tests` are symlinks to the root, so old commands still work.
+
+- `run_*.py` add the repo root to `sys.path` when the package is not installed, then `set_app_root(<folder>)`.
+  `ofdm321.config.app_root()` = the running folder: `config/default.json` and `runs/` are per folder.
+  Tools use `app_root()` = the folder you run them from (`cd OFDM_N321_TX && python3 tools/probe_n321.py`).
+- GRC Embedded blocks: `_project_root()` imports an installed `ofdm321`, else finds `<repo>/ofdm321` from the
+  flowgraph location, `$OFDM_N321_DIR`, `~/MIMO-OFDM-USRP`. GRC files are written with GRC's own YAML dumper.
+- Per-folder docs: `OFDM_N321_RX/docs` and `OFDM_N321_TX/docs` are identical copies (keep them so).
 
 | Folder | Use | Entry points |
 |---|---|---|
@@ -42,7 +50,7 @@ Three self-contained folders, each with its OWN copy of the `ofdm321` package. W
 | `OFDM_N321_MIMO` | loopback on one N321, 4 antennas | `scripts/run_antenna_915.sh`, `scripts/run_sim.sh` → `run_n321.py` → `ofdm321/runner.py` |
 | `grc/`, `*/grc/` | GNU Radio Companion views (Embedded Python blocks call `ofdm321`) | fixed modulation only, no ACM |
 
-`ofdm321/` modules:
+`ofdm321/` modules (repo root):
 - `modem.py` — OFDM frame (FFT 64, CP 16, 48 data + 4 pilots; STF w/ CSD, 2 P-matrix LTFs, SIG CRC16),
   Modulator/Demodulator (Schmidl-Cox w/ Cauchy-Schwarz metric, CFO, H 2x2, CPE, MRC/SFBC/MMSE,
   batched numpy), interleavers none/block/carrier, soft errors-and-erasures RS, ACM frames
@@ -69,8 +77,8 @@ Three self-contained folders, each with its OWN copy of the `ofdm321` package. W
 ## Commands
 
 ```bash
-python3 OFDM_N321_RX/tests/test_modem.py          # 18 tests (~1 min, needs ffmpeg), must all PASS before committing
-python3 OFDM_N321_TX/tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
+python3 tests/test_modem.py                       # 18 tests (~1 min, needs ffmpeg), must all PASS before committing
+cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
 bash OFDM_N321_RX/scripts/sim_rx.sh --play            ; bash OFDM_N321_TX/scripts/sim_tx.sh
@@ -109,12 +117,15 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   260 fixed. History per second in both reports + tools/plot_run.py; radio feedback watchdog; RF0/RF1 names.
 - Done on 2026-11-19 (commits 34e3560..ae8e882, all pushed): CLAUDE.md added; fb gain defaults 30/60 and docs
   "channel A = RF0, B = RF1"; v0.5 in 5 commits (adaptive video, history + plot, watchdog, port names, docs);
-  tests 11 -> 18, all PASS; ofdm321/tests/tools identical in the 3 folders.
+  tests 11 -> 18, all PASS (then still 3 identical copies of ofdm321).
 - Project report (Claude Doc) updated to v0.5 the same day (v0.4 + v0.5 sections, RF 19/11 row, plot_run.png
   of the alamouti+UDP sim). Its 19/11 RF row still shows "—" for frames, rx_rms and RX gain: the values are
   now known (run above), the doc is not yet updated.
 - 2026-11-20: status check, no code change. Git clean (only the local default.json edit), in sync with
-  origin/main; 18/18 tests PASS; the 3 ofdm321 copies identical. No v0.5 run on RF yet.
+  origin/main; 18/18 tests PASS. No v0.5 run on RF yet.
+- 2026-11-20 (no hardware): one shared `ofdm321` package at the repo root + `pyproject.toml`;
+  tests/ and tools/ at the root (symlinks in the folders); GRC blocks find the shared package; sim_rx/sim_tx and
+  fbradio sims SIM_RX_VERIFIED, all 4 GRC flowgraphs compile with grcc.
 
 ## Next steps (agreed direction)
 

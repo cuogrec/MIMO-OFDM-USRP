@@ -12,8 +12,10 @@ Sơ đồ GNU Radio Companion (3.10.9) để **xem tổng quan** và thử nhanh
 | [E3] Video PDU receiver | `ofdm321.blocks.VideoReceiver` | RS8+8 có kiểm chứng; ghi TS ra file và gửi UDP 5002 |
 | [E4] 2×2 channel (disabled) | `ofdm321.blocks.MimoChannelSim` | Kênh mô phỏng |
 
-Các khối [E] tìm gói `ofdm321` theo thứ tự: biến môi trường `OFDM_N321_DIR`, rồi thư mục cha của file sinh ra
-(vì thế nên đặt `.grc` trong `OFDM_N321_MIMO/grc/`), rồi `~/Desktop/OFDM_N321_MIMO`.
+Các khối [E] dùng gói chung `ofdm321` ở gốc repo. Nếu đã cài (`pip install -e .`, có trong
+`scripts/setup_ubuntu.sh`) thì chạy ở đâu cũng được. Nếu chưa cài, khối tự tìm theo thứ tự: biến môi trường
+`OFDM_N321_DIR` (đường dẫn gốc repo), rồi các thư mục cha của file sinh ra từ `.grc`, rồi `~/MIMO-OFDM-USRP`
+và `~/Desktop/MIMO-OFDM-USRP[-main]`.
 
 Chạy mô phỏng không cần radio:
 

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ofdm321"
+dynamic = ["version"]
+description = "Real-time video over OFDM (2x2 MIMO / SISO, ACM) between two USRP N321 - GNU Radio + numpy"
+readme = "README.md"
+requires-python = ">=3.10"
+# GNU Radio, UHD, PyQt5 and FFmpeg come from the system (apt: gnuradio uhd-host python3-uhd ffmpeg);
+# they are not on PyPI in a usable form, so they are not listed here.
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+
+[tool.setuptools]
+packages = ["ofdm321"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ofdm321.__version__"}

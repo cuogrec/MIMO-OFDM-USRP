@@ -3,6 +3,10 @@
 Bản nâng cấp của `OFDM_Video_N210` lên **một USRP N321**, nối với máy Ubuntu qua **10 GbE**,
 chạy ở **915 MHz** và dùng cả 2 kênh TX lẫn 2 kênh RX.
 
+Mã xử lý tín hiệu là gói chung `ofdm321` ở gốc repo (`../ofdm321`); folder này chỉ giữ `scripts/`, `config/`,
+`docs/`, `grc/` và chương trình chạy. `tools/` và `tests/` là symlink về gốc repo, nên các lệnh bên dưới vẫn như cũ.
+Cài lần đầu: `bash scripts/setup_ubuntu.sh` (apt + `pip install -e .`). Cập nhật: `git pull origin main`.
+
 - Tầng video, đóng gói và FEC (CRC32 + RS(248,216) + RS8+8 có kiểm chứng) giữ nguyên byte như v1.23.
 - Tầng vật lý là modem OFDM MIMO mới, có 4 chế độ: `siso`, `simo` (MRC), `alamouti` (SFBC, mặc định)
   và `smux` (2 luồng, MMSE).

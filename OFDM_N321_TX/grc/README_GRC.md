@@ -15,7 +15,10 @@ gnuradio-companion ~/Desktop/MIMO-OFDM-USRP-main/OFDM_N321_TX/grc/ofdm_n321_tx.g
 | UHD: USRP Sink | Có sẵn | N321 #1 `192.168.180.3`, `A:0 B:0`, cổng TX/RX, 915 MHz, gain 20 |
 | Interleave + ZMQ PUSH Sink | Có sẵn, **tắt sẵn** | Chỉ dùng khi mô phỏng: gửi 2 kênh mẫu tới máy thu qua `tcp://127.0.0.1:5560` |
 
-Khối [E1] gọi gói `ofdm321` của chính folder này, nên thư mục `grc/` phải nằm trong `OFDM_N321_TX`.
+Các khối [E] dùng gói chung `ofdm321` ở gốc repo. Nếu đã cài (`pip install -e .`, có trong
+`scripts/setup_ubuntu.sh`) thì chạy ở đâu cũng được. Nếu chưa cài, khối tự tìm theo thứ tự: biến môi trường
+`OFDM_N321_DIR` (đường dẫn gốc repo), rồi các thư mục cha của file sinh ra từ `.grc`, rồi `~/MIMO-OFDM-USRP`
+và `~/Desktop/MIMO-OFDM-USRP[-main]`.
 
 **Hai máy phải trùng** `samp_rate`, `center_freq`, `mimo_mode`, `modulation`. Riêng `interleaver` chỉ cần chọn ở máy phát, máy thu tự đọc từ khung.
 

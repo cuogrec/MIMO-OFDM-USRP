@@ -17,7 +17,23 @@ FFmpeg (H.264 → MPEG-TS) → gói 212 B + RS8+8 → CRC32 + RS(248,216) → in
 | [`OFDM_N321_TX`](OFDM_N321_TX) | N321 **#1** phát (anten trên RF0 TX/RX, RF1 TX/RX) | `bash scripts/start_tx.sh --source file --input video.mp4` |
 | [`OFDM_N321_RX`](OFDM_N321_RX) | N321 **#2** thu (anten trên RF0 RX2, RF1 RX2) | `bash scripts/start_rx.sh --play` (chạy trước TX) |
 
-Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`. Cổng được gọi theo nhãn trên mặt máy N321:
+Mã xử lý tín hiệu là **một gói Python chung** `ofdm321/` ở gốc repo. Ba folder chỉ giữ phần riêng của từng
+máy: `scripts/`, `config/` (IP N321, gain...), `docs/`, `grc/` và chương trình chạy `run_*.py`.
+
+```
+MIMO-OFDM-USRP/
+├── ofdm321/          gói chung: modem OFDM, FEC, ACM, khối GNU Radio, chương trình TX/RX
+├── tests/            python3 tests/test_modem.py
+├── tools/            probe_n321.py, plot_run.py, make_iq.py, ...
+├── pyproject.toml    pip install -e .  (scripts/setup_ubuntu.sh làm sẵn)
+├── grc/              sơ đồ GRC tổng quan hai máy
+├── OFDM_N321_TX/     máy phát: scripts/ config/ docs/ grc/ run_tx.py   (tools, tests: symlink về gốc)
+├── OFDM_N321_RX/     máy thu:  scripts/ config/ docs/ grc/ run_rx.py
+└── OFDM_N321_MIMO/   loopback: scripts/ config/ docs/ grc/ run_n321.py
+```
+
+`run_*.py` tự tìm gói ở gốc repo nếu chưa cài, nên các lệnh `bash scripts/...` chạy được ngay sau `git clone`.
+`config/default.json` và `runs/` vẫn thuộc riêng từng folder. Cổng được gọi theo nhãn trên mặt máy N321:
 **RF0** = kênh A (UHD `A:0`), **RF1** = kênh B (`B:0`).
 
 ## Tính năng
@@ -40,8 +56,8 @@ Mỗi folder chạy độc lập và có bản sao riêng của gói `ofdm321`. 
 
 ```bash
 cd OFDM_N321_MIMO
-bash scripts/setup_ubuntu.sh
-python3 tests/test_modem.py                          # tự kiểm tra modem
+bash scripts/setup_ubuntu.sh                         # apt + pip install -e . (gói ofdm321 chung)
+python3 tests/test_modem.py                          # tự kiểm tra modem (= ../tests/test_modem.py)
 bash scripts/run_sim.sh --seconds 20 --play          # mô phỏng, không cần radio
 python3 tools/probe_n321.py --addr <IP N321> --stream   # kiểm tra N321, không phát RF
 ```

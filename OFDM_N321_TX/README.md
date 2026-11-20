@@ -3,6 +3,10 @@
 Phát video OFDM 2×2 MIMO bằng 2 anten trên **RF0 TX/RX** (A:0) và **RF1 TX/RX** (B:0). Máy thu dùng folder `OFDM_N321_RX`.
 Hướng dẫn đầy đủ (cách nối mạng, đổi IP, anten, đọc log): **[docs/HUONG_DAN_2_N321.md](docs/HUONG_DAN_2_N321.md)**.
 
+Mã xử lý tín hiệu là gói chung `ofdm321` ở gốc repo (`../ofdm321`); folder này chỉ giữ `scripts/`, `config/`,
+`docs/`, `grc/` và chương trình chạy. `tools/` và `tests/` là symlink về gốc repo, nên các lệnh bên dưới vẫn như cũ.
+Cài lần đầu: `bash scripts/setup_ubuntu.sh` (apt + `pip install -e .`). Cập nhật: `git pull origin main`.
+
 ```bash
 bash scripts/setup_ubuntu.sh                              # một lần
 python3 tools/probe_n321.py --addr 192.168.180.3 --stream # không phát RF

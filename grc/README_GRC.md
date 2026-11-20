@@ -11,11 +11,10 @@ xuất `report.json` và so sánh SHA-256. File `.grc` này dùng để **xem t�
 1. Chép thư mục `grc/` vào gốc repo: `~/Desktop/MIMO-OFDM-USRP-main/grc/`.
 2. Mở file: `gnuradio-companion ~/Desktop/MIMO-OFDM-USRP-main/grc/ofdm_n321_2may.grc`.
 
-Các khối [E] tìm gói `ofdm321` theo thứ tự sau:
-
-1. biến môi trường `OFDM_N321_DIR`;
-2. thư mục `../OFDM_N321_RX` hoặc `../OFDM_N321_TX` tính từ file `.grc`;
-3. `~/Desktop/MIMO-OFDM-USRP-main/OFDM_N321_RX`.
+Các khối [E] dùng gói chung `ofdm321` ở gốc repo. Nếu đã cài (`pip install -e .`, có trong
+`scripts/setup_ubuntu.sh`) thì chạy ở đâu cũng được. Nếu chưa cài, khối tự tìm theo thứ tự: biến môi trường
+`OFDM_N321_DIR` (đường dẫn gốc repo), rồi các thư mục cha của file sinh ra từ `.grc`, rồi `~/MIMO-OFDM-USRP`
+và `~/Desktop/MIMO-OFDM-USRP[-main]`.
 
 Nếu không tìm thấy, khối vẫn hiện đúng cổng nhưng có tên `[THIẾU ofdm321]` và báo lỗi khi bấm chạy.
 
