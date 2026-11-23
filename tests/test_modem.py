@@ -606,6 +606,31 @@ def test_tx_pacing_limits_buffer_delay():
     print("  TX buffer delay median / frames/s / CPU: no pacing", out[0.0], "| lead 30 ms", out[0.03])
 
 
+def test_report_fields_and_stale_package_message():
+    """v0.6.1: per-port RX level medians + RF1/RF0 imbalance; tx_gain_profile kept in the settings;
+    run_*.py explains a stale ofdm321/ namespace folder instead of failing on an import error."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from ofdm321.config import load_settings
+    from ofdm321.runner_split import run_medians
+    hist = [{"ok": 100 * i, "rx_rms": 0.01, "rx_rms_rf0": 0.01, "rx_rms_rf1": 0.0032, "snr_db": 20.0}
+            for i in range(1, 6)]
+    med = run_medians(hist)
+    assert med["rx_rms_rf0"] == 0.01 and med["rx_rms_rf1"] == 0.0032 and med["rf1_vs_rf0_db"] == -9.9, med
+    s = load_settings(None, tx_gain_profile="steps:30,24,18:10")
+    assert s.to_dict()["tx_gain_profile"] == "steps:30,24,18:10"
+    repo = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as d:
+        app = Path(d) / "OFDM_N321_RX"
+        (app / "ofdm321" / "__pycache__").mkdir(parents=True)
+        (app / "run_rx.py").write_text((repo / "OFDM_N321_RX" / "run_rx.py").read_text())
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        out = subprocess.run([sys.executable, "-S", str(app / "run_rx.py"), "--help"], capture_output=True,
+                             text=True, cwd=d, env=env)
+        assert out.returncode == 2 and "rm -rf" in out.stderr and str(app / "ofdm321") in out.stderr, out
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

@@ -84,6 +84,7 @@ class Settings:
     subdev: str = "A:0 B:0"
     frequency: float = 915e6
     tx_gain: float = 10.0
+    tx_gain_profile: str = ""        # TX, RF ACM tests: gain over time (blocks.parse_snr_profile), <= tx_gain
     rx_gain: float = 30.0
     tx_antenna: str = "TX/RX"
     rx_antenna: str = "RX2"

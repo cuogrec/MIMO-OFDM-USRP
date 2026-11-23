@@ -90,7 +90,7 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 29 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 30 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -117,7 +117,10 @@ Both sides must use the same `--mimo`, `--mod`, `--rate`, `--freq`, `--fec`/`--l
 Success = RX prints `RF_RX_VERIFIED` / `SIM_RX_VERIFIED` (video SHA-256 identical).
 
 RX report: `rx.rx_rms` / `snr_db` / `evm_db` = medians over seconds with decoded frames (`median_during_run`);
-`*_final` = value at stop (often after the TX ended).
+`*_final` = value at stop (often after the TX ended). v0.6.1: history has `rx_rms_rf0` / `rx_rms_rf1` per port
+(RF1 None with radio feedback), `median_during_run.rf1_vs_rf0_db` = branch imbalance (weak RF1 RX2 check);
+TX `settings.tx_gain_profile` is recorded. run_*.py stop with an `rm -rf` hint if a stale `OFDM_N321_*/ofdm321/`
+folder (only `__pycache__`) shadows the package.
 
 Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` small; `lost` ~0;
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.

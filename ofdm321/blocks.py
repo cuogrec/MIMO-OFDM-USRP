@@ -361,6 +361,7 @@ class MimoRxSink(gr.sync_block):
         self.interleaver = None
         self.snr = self.evm = self.cond = None
         self.rx_rms = 0.0
+        self.rx_rms_ch = (0.0, 0.0)            # input 0 / 1 (RF0 / RF1 in two-channel RF mode)
         # latency: absolute sample index of buf[0], arrival time of every input chunk
         self.dropped = 0
         self.arr_idx, self.arr_t = [], []      # absolute index after each input chunk, its host time
@@ -396,6 +397,7 @@ class MimoRxSink(gr.sync_block):
             del self.arr_idx[:cut], self.arr_t[:cut]
         if m:
             self.rx_rms = float(np.sqrt(np.mean(np.abs(a[-4096:]) ** 2)))
+            self.rx_rms_ch = (self.rx_rms, float(np.sqrt(np.mean(np.abs(b[-4096:]) ** 2))))
         self._process()
         return m
 
@@ -515,7 +517,7 @@ class MimoRxSink(gr.sync_block):
     def snapshot(self):
         with self.lock:
             return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
-                        rx_rms=self.rx_rms, tracking=self.expected is not None,
+                        rx_rms=self.rx_rms, rx_rms_ch=self.rx_rms_ch, tracking=self.expected is not None,
                         interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped,
                         acm=self.acm, modulation=self.modulation, snr_eff_db=self.snr_eff,
                         acm_frames=dict(self.mod_frames))

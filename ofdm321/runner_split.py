@@ -88,9 +88,12 @@ def run_medians(history):
             rows.append(h)
         prev = h.get("ok") or prev
     out = {"seconds": len(rows)}
-    for k in ("rx_rms", "snr_db", "evm_db", "snr_eff_db"):
+    for k in ("rx_rms", "snr_db", "evm_db", "snr_eff_db", "rx_rms_rf0", "rx_rms_rf1"):
         vals = [h[k] for h in rows if h.get(k) is not None]
-        out[k] = round(median(vals), 6 if k == "rx_rms" else 2) if vals else None
+        out[k] = round(median(vals), 6 if k.startswith("rx_rms") else 2) if vals else None
+    if out.get("rx_rms_rf0") and out.get("rx_rms_rf1"):        # branch imbalance (alamouti/smux): weak RF1?
+        import math
+        out["rf1_vs_rf0_db"] = round(20 * math.log10(out["rx_rms_rf1"] / out["rx_rms_rf0"]), 1)
     return out
 
 
@@ -132,7 +135,7 @@ def main_tx(argv=None):
     p.add_argument("--source", choices=("testpattern", "webcam", "file"), default="testpattern")
     p.add_argument("--input")
     p.add_argument("--acm-modcods", dest="acm_modcods", help="ACM ladder, e.g. qpsk,16qam,64qam")
-    p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
+    p.add_argument("--tx-gain-profile", dest="tx_gain_profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
     p.add_argument("--no-acm-debounce", dest="acm_debounce", action="store_const", const=False,
@@ -146,7 +149,8 @@ def main_tx(argv=None):
                    help="ACM with the fixed video bitrate of config (ts_muxrate)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain", "acm_debounce",
+    s = settings_from(a, ["tx_gain", "tx_gain_profile", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db",
+                          "fb_rx_gain", "acm_debounce",
                           "adaptive_video", "acm_resend_s"])
     require_ffmpeg()
     run_dir = new_run("tx", s, a.mode, a.name)
@@ -268,9 +272,9 @@ def main_tx(argv=None):
                 keep += [fsrc, fnul, fch, fbrx]
                 report["hardware"]["feedback_zmq"] = s.fb_zmq_addr
         gain_profile = None
-        if a.tx_gain_profile:
+        if s.tx_gain_profile:                # recorded in report["settings"]
             from .blocks import parse_snr_profile
-            gain_profile = parse_snr_profile(a.tx_gain_profile)
+            gain_profile = parse_snr_profile(s.tx_gain_profile)
             peak = max(gain_profile(t / 10) for t in range(6000))
             if peak > s.tx_gain + 1e-9 or min(gain_profile(t / 10) for t in range(6000)) < 0:
                 raise ValueError(f"--tx-gain-profile reaches {peak} dB: keep it within 0..tx_gain ({s.tx_gain})")
@@ -630,6 +634,9 @@ def main_rx(argv=None):
                 "rs": r["rs_fail"], "sig": r["sig_fail"], "crc": r["crc_fail"], "lost": r["lost_sync"],
                 "snr_db": r["snr_db"], "evm_db": r["evm_db"], "snr_eff_db": r["snr_eff_db"],
                 "modulation": r["modulation"], "rx_rms": round(r["rx_rms"], 5), "cond_db": r["cond_db"],
+                # per input = per N321 port (RF0 = channel A, RF1 = channel B); RF1 unused with radio feedback
+                "rx_rms_rf0": round(r["rx_rms_ch"][0], 5),
+                "rx_rms_rf1": None if radio_fb else round(r["rx_rms_ch"][1], 5),
                 "data": v["data_packets"], "missing": v["missing_data_packets"],
                 "fb_frames": fbsrc.frames if fbsrc is not None else None,
                 "sim_snr_db": round(ch_sim.snr_now, 2) if ch_sim is not None else None})

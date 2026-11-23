@@ -81,9 +81,9 @@ def main(argv=None):
         for h in r.get("history", []):
             h["_x"] = h["t_wall"] - t0
 
-    fig, axs = plt.subplots(5, 1, figsize=(12, 13), sharex=True,
-                            gridspec_kw={"height_ratios": [3, 2, 3, 1.4, 2.4]})
-    ax_snr, ax_mod, ax_rate, ax_queue, ax_loss = axs
+    fig, axs = plt.subplots(6, 1, figsize=(12, 15), sharex=True,
+                            gridspec_kw={"height_ratios": [3, 2, 1.8, 3, 1.4, 2.4]})
+    ax_snr, ax_mod, ax_lvl, ax_rate, ax_queue, ax_loss = axs
 
     # 1. SNR
     if rx:
@@ -129,6 +129,26 @@ def main(argv=None):
     ax_mod.set_title("Điều chế")
     ax_mod.grid(True, alpha=0.3)
     ax_mod.legend(loc="lower left", fontsize=8)
+
+    # 2b. RX level per port (v0.6.1: rx_rms_rf0 / rx_rms_rf1): weak branch diagnosis
+    if rx:
+        h = rx.get("history", [])
+        import math
+        keys = [("rx_rms_rf0", "RF0 (kênh A)"), ("rx_rms_rf1", "RF1 (kênh B)")]
+        if not any(r.get("rx_rms_rf0") is not None for r in h):
+            keys = [("rx_rms", "rx_rms")]
+        for key, lab in keys:
+            pts = [(r["_x"], 20 * math.log10(r[key])) for r in h if r.get(key)]
+            if pts:
+                ax_lvl.plot(*zip(*pts), label=lab)
+        d = (rx.get("rx", {}).get("median_during_run") or {}).get("rf1_vs_rf0_db")
+        ax_lvl.set_title("Mức thu (dBFS)" + (f": RF1 so với RF0 {d:+.1f} dB (trung vị)" if d is not None else ""))
+    else:
+        ax_lvl.set_title("Mức thu (cần report RX)")
+    ax_lvl.set_ylabel("dBFS")
+    ax_lvl.grid(True, alpha=0.3)
+    if ax_lvl.get_legend_handles_labels()[0]:
+        ax_lvl.legend(loc="lower left", fontsize=8)
 
     # 3. video bitrate (+ TS capacity of the modulation in use)
     if tx:
