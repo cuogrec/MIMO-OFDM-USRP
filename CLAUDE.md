@@ -70,7 +70,9 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
   `SfoResampler` (16-tap windowed sinc), `VideoReceiver` (0.3 s reorder buffer with ACM, `--reorder`),
   `FeedbackRadioSource`.
 - `acm.py` — `AcmController` (thresholds 9/14/20/26 dB SNR_eff, margin 1, hysteresis 1, hold 0.5 s,
-  confirmation-based error handling, 1.5 s timeout, `mod_since`), `FeedbackReporter`, UDP `FeedbackSender`
+  confirmation-based error handling, 1.5 s timeout, `mod_since`; v0.6.1 debounce: SNR step-down after 3 fresh
+  reports over 30 ms, not within 0.3 s of a confirmed step up; CER > 10 % or SNR below the lower threshold: at
+  once; `--no-acm-debounce` = v0.6.0), `FeedbackReporter`, UDP `FeedbackSender`
   (every 0.02 s)/`FeedbackReceiver`, radio feedback packet `OFB1` + `RadioFeedbackHandler`, `FeedbackWatchdog`.
 - `video_adapt.py` (v0.5) — ACM-driven video bitrate: one FFmpeg, one TS rendition per modulation (75 % of its
   capacity), spliced at keyframes (GOP 1 s) with TS continuity counters rewritten; down at once, up after 5 s stable.
@@ -88,7 +90,7 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 28 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 29 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -167,6 +169,8 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   0.398 s and BPSK<->QPSK chatter (75-90 s) at SNR_eff 18.5 dB.
 - v0.6.1 latency: sim with the USRP buffer emulation reproduced the loop (428 ms: TX video buffer 135 + feedback TX
   buffer 267 ms); `--tx-lead-ms 30` (default) -> 78 ms (buffers 25 + 24 ms). Not yet verified on RF.
+- v0.6.1 ACM debounce: test replay of 18.5 dB + 14.3 dB dips: 41 -> 0 switches; sim `--snr-profile
+  dips:19:9:0.8:15`: 33 -> 1 switches, 0 lost both, DATA 4672 -> 7987 (video stays at the QPSK rate).
 
 ## Next steps (agreed direction)
 

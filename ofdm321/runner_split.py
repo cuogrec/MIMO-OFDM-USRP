@@ -135,6 +135,8 @@ def main_tx(argv=None):
     p.add_argument("--tx-gain-profile", help="RF test of ACM: TX gain over time, e.g. steps:25,15,5,15:10 "
                    "(never above --tx-gain)")
     p.add_argument("--acm-margin", dest="acm_margin_db", type=float, help="ACM SNR margin dB (1)")
+    p.add_argument("--no-acm-debounce", dest="acm_debounce", action="store_const", const=False,
+                   help="v0.6.0 ACM controller: step down on a single report below the threshold")
     p.add_argument("--fb-rx-gain", dest="fb_rx_gain", type=float, help="radio feedback: RF1 RX2 gain (60)")
     p.add_argument("--acm-resend", dest="acm_resend_s", type=float,
                    help="ACM: on a downshift resend the packets of the last max(S, 1.5 x loop) s (0.1, 0 = off)")
@@ -144,7 +146,7 @@ def main_tx(argv=None):
                    help="ACM with the fixed video bitrate of config (ts_muxrate)")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain",
+    s = settings_from(a, ["tx_gain", "tx_rms", "interleaver", "acm_modcods", "acm_margin_db", "fb_rx_gain", "acm_debounce",
                           "adaptive_video", "acm_resend_s"])
     require_ffmpeg()
     run_dir = new_run("tx", s, a.mode, a.name)
@@ -182,7 +184,9 @@ def main_tx(argv=None):
         tb = gr.top_block("N321 MIMO TX", catch_exceptions=True)
         if s.acm:
             from .acm import AcmController, FeedbackReceiver
-            ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db, fec=s.fec)
+            ctl = AcmController(s.acm_modcods, margin_db=s.acm_margin_db, fec=s.fec, debounce=s.acm_debounce,
+                                down_reports=s.acm_down_reports, down_hold_s=s.acm_down_hold_s,
+                                up_guard_s=s.acm_up_guard_s)
             if radio_fb:
                 from .acm import RadioFeedbackHandler
                 from .blocks import feedback_rx_settings
@@ -377,6 +381,7 @@ def main_tx(argv=None):
                 fb.close()
             lat = sorted(ctl.latency)
             report["acm"] = {"switches": ctl.switches, "reports": ctl.reports, "frames": src.snapshot()["acm_frames"],
+                             "debounce": s.acm_debounce, "ignored_dips": ctl.ignored_dips,
                              "loop_latency_s_median": lat[len(lat) // 2] if lat else None,
                              "history": list(ctl.history), "fb_link": s.fb_link}
             if fbh is not None:

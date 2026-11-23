@@ -638,7 +638,8 @@ def parse_snr_profile(text):
     """'' -> None (fixed SNR). Otherwise f(t) -> SNR dB:
          sine:MIN:MAX:PERIOD        e.g. sine:6:30:40
          steps:V1,V2,...:DWELL      e.g. steps:28,18,8,14,24:10  (repeats)
-         ramp:START:END:DURATION    linear, then holds END"""
+         ramp:START:END:DURATION    linear, then holds END
+         dips:BASE:DEPTH:RATE:MS    BASE dB with random fades DEPTH dB deep, RATE per second, MS long"""
     if not text:
         return None
     kind, _, rest = str(text).partition(":")
@@ -652,7 +653,18 @@ def parse_snr_profile(text):
     if kind == "ramp":
         a, b, dur = map(float, parts)
         return lambda t: a + (b - a) * min(1.0, t / dur)
-    raise ValueError("sim_snr_profile: sine:MIN:MAX:PERIOD | steps:V1,V2,..:DWELL | ramp:A:B:SECONDS")
+    if kind == "dips":
+        # steady SNR with short random fades (RF 23/11: SNR_eff 18.5 dB with isolated reports at ~14 dB)
+        base, depth, rate, dur_ms = map(float, parts)
+        starts = np.cumsum(np.random.default_rng(7).exponential(1.0 / rate, int(rate * 3600) + 10))
+        dur = dur_ms / 1e3
+
+        def f(t):
+            i = np.searchsorted(starts, t) - 1
+            return base - depth if i >= 0 and t - starts[i] < dur else base
+        return f
+    raise ValueError("sim_snr_profile: sine:MIN:MAX:PERIOD | steps:V1,V2,..:DWELL | ramp:A:B:SECONDS | "
+                     "dips:BASE:DEPTH:PER_SECOND:MS")
 
 
 class VideoReceiver(gr.basic_block):

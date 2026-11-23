@@ -60,6 +60,10 @@ class Settings:
     acm: bool = False                # per-frame modulation chosen from RX feedback
     acm_modcods: str = "bpsk,qpsk,16qam,64qam"   # TX: allowed modulations (ladder)
     acm_margin_db: float = 1.0       # TX: extra SNR above the calibrated threshold
+    acm_debounce: bool = True        # TX (v0.6.1): SNR step-down needs acm_down_reports reports over acm_down_hold_s,
+    acm_down_reports: int = 3        #   only reports of the current modulation count, and not within acm_up_guard_s
+    acm_down_hold_s: float = 0.03    #   after a confirmed step up (CER > 10 % and SNR below the lower threshold:
+    acm_up_guard_s: float = 0.3      #   at once). False = v0.6.0 controller
     acm_host: str = "127.0.0.1"      # RX: IP of the TX PC (feedback destination)
     acm_port: int = 5003             # UDP port of the feedback channel
     acm_resend_s: float = 0.1        # TX: on an ACM downshift resend packets of the last max(this, 1.5 x loop) s (0 = off)
@@ -158,6 +162,9 @@ class Settings:
         if not 0 <= self.tx_lead_ms <= 1000 or not 1024 <= self.tx_buffer_samples <= 1 << 22 \
                 or not 0 <= self.sim_tx_device_samples <= 1 << 23:
             raise ValueError("tx_lead_ms 0..1000, tx_buffer_samples 1024..4M, sim_tx_device_samples 0..8M")
+        if not 1 <= self.acm_down_reports <= 50 or not 0 <= self.acm_down_hold_s <= 1 \
+                or not 0 <= self.acm_up_guard_s <= 5:
+            raise ValueError("acm_down_reports 1..50, acm_down_hold_s 0..1, acm_up_guard_s 0..5")
         if not 0.2 <= self.sync_threshold <= 0.95:
             raise ValueError("sync_threshold must be in [0.2, 0.95]")
         if self.clock_source not in ("internal", "external", "gpsdo") or \

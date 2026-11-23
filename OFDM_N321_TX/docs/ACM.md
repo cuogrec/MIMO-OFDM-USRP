@@ -248,3 +248,33 @@ bên vì máy thu cũng phát phản hồi). Bộ đệm đầu ra GNU Radio c�
 Phần còn lại của vòng là thời lượng một khung phản hồi (7,5 ms), chờ khung phản hồi kế tiếp, và lọc EWMA của máy thu.
 Nếu log của UHD in `U` (underflow) hoặc `tx_late_frames` tăng, nghĩa là Python không kịp đáp ứng mức lead đặt ra; khi
 đó tăng `--tx-lead-ms` lên 50–80.
+
+## 8. Chống nhảy điều chế (v0.6.1)
+
+Lượt RF 23/11: ở SNR_eff trung vị 18,5 dB (QPSK cần ≥ 15 dB), ACM nhảy BPSK↔QPSK 9 lần trong 15 s. Mỗi lần hạ đều do
+**một** báo cáo SNR đơn lẻ khoảng 14,3 dB, nhiều lần ngay sau khi vừa tăng. Bộ điều khiển v0.6.0 hạ ngay ở báo cáo đầu
+tiên dưới ngưỡng. Quy tắc mới (máy phát, `acm_debounce`, mặc định bật):
+
+- **Hạ theo SNR** chỉ khi ≥ 3 báo cáo liên tiếp dưới ngưỡng (`acm_down_reports`), kéo dài ≥ 30 ms (`acm_down_hold_s`).
+  Chỉ tính báo cáo có `rx_mod` trùng điều chế hiện tại; báo cáo về khung còn mang điều chế cũ không dùng cho quyết
+  định theo SNR.
+- **Hạ khẩn, ngay lập tức:** tỉ lệ codeword lỗi > 10% (của điều chế hiện tại), hoặc SNR thấp hơn cả ngưỡng của bậc
+  dưới. Trường hợp thứ hai áp dụng với mọi báo cáo; khi đó hạ thẳng xuống bậc cao nhất còn đủ SNR.
+- **Sau khi tăng:** chờ máy thu xác nhận điều chế mới, rồi thêm 0,3 s (`acm_up_guard_s`), mới cho phép hạ theo SNR.
+  CER > 10% vẫn hạ ngay.
+- Tăng giữ như cũ: SNR ≥ ngưỡng bậc trên + biên + trễ 1 dB, liên tục 0,5 s, cũng chỉ dựa trên báo cáo của điều chế hiện tại.
+- `--no-acm-debounce` (máy phát) quay về v0.6.0. `report.json` → `acm.ignored_dips` đếm số lần sụt ngắn đã bỏ qua.
+
+Test `test_acm_no_chatter_at_18_5_db` phát lại chuỗi 18,5 dB có các mẫu 14,3 dB (báo cáo mỗi 8 ms, vòng 80 ms): v0.6.0
+chuyển 41 lần trong 15 s, bản mới 0 lần. Một lần sụt thật xuống 13 dB vẫn được hạ trong ≤ 50 ms.
+
+Mô phỏng hai tiến trình (siso + phản hồi radio, `--tx-lead-ms 30`):
+
+| `--snr-profile` | Số lần chuyển v0.6.0 / v0.6.1 | Gói video mất v0.6.0 / v0.6.1 | Ghi chú |
+|---|---|---|---|
+| `dips:19:9:0.8:15` (19 dB, sụt 9 dB trong 15 ms, 0,8 lần/s) | **33 / 1** | 0 / 0 | bản mới gửi 7987 gói DATA so với 4672 (bitrate video giữ ở mức QPSK) |
+| `steps:30,22,14,22,30:8` | 8 / 8 | 0 / 0 | |
+| `sine:12:28:30` | 8 / 8 | 0 / 0 | 17 lần sụt ngắn được bỏ qua |
+| `sine:6:30:40` | 8 / 8 | 848 / 840 | mất gói khi SNR xuống 6 dB (giới hạn vật lý của siso) |
+
+Profile `dips:BASE:DEPTH:RATE:MS` (mới) tạo các lần fade ngắn ngẫu nhiên để tái hiện hiện tượng RF trong mô phỏng.

@@ -177,6 +177,62 @@ def test_acm_controller():
     assert c.modulation == "bpsk"
 
 
+def _acm_replay(c, snr_fn, seconds, period=0.008, loop=0.08, cer_fn=None):
+    """Feed controller c with reports every `period` s; the RX decodes what the TX chose `loop` s ago.
+    Returns [(t, modulation)] of every switch."""
+    t0 = 1000.0
+    chosen = [(t0 - 1, c.modcods[c.index])]
+    switches = []
+    t = t0
+    while t < t0 + seconds:
+        t += period
+        rx_mod = [m for ts, m in chosen if ts <= t - loop][-1]
+        before = c.index
+        c.update(snr_fn(t - t0), cer_fn(t - t0) if cer_fn else 0.0, rx_mod, now=t)
+        if c.index != before:
+            chosen.append((t, c.modcods[c.index]))
+            switches.append((round(t - t0, 3), c.modcods[c.index]))
+    return switches
+
+
+def test_acm_no_chatter_at_18_5_db():
+    """RF 23/11: SNR_eff ~18.5 dB with isolated reports at 14.3 dB made v0.6.0 jump BPSK<->QPSK 9 times in 15 s.
+    With debouncing (3 reports + 30 ms, fresh reports only, 0.3 s guard after a step up): no switch after
+    reaching QPSK. A real fade (13 dB for 0.3 s) still steps down within ~50 ms, and back up afterwards."""
+    from ofdm321.acm import AcmController
+    rng = np.random.default_rng(41)
+    noise = rng.normal(0, 0.6, 4000)
+    dips = {}
+    for k, t in enumerate(np.arange(0.9, 15, 0.7)):        # single and double dips, some right after start
+        dips[round(t, 3)] = 1 + k % 2
+
+    def snr(t):
+        i = int(t / 0.008)
+        for td, n in dips.items():
+            if 0 <= t - td < n * 0.008 - 1e-9:
+                return 14.3
+        return 18.5 + noise[i % len(noise)]
+    counts = {}
+    for debounce in (False, True):
+        c = AcmController("bpsk,qpsk,16qam,64qam", debounce=debounce)
+        sw = _acm_replay(c, snr, 15.0)
+        first_qpsk = next(t for t, m in sw if m == "qpsk")
+        counts[debounce] = len([1 for t, m in sw if t > first_qpsk])
+    assert counts[True] == 0 and counts[False] >= 5, counts
+    print("  switches after reaching QPSK in 15 s at 18.5 dB with 14.3 dB dips: v0.6.0", counts[False],
+          "| debounced", counts[True])
+    # a real fade still acts quickly
+    c = AcmController("bpsk,qpsk,16qam,64qam")
+    sw = _acm_replay(c, lambda t: 13.0 if 3.0 <= t < 3.3 else 18.5, 6.0)
+    down = [t for t, m in sw if m == "bpsk" and t > 2.9]
+    assert down and down[0] - 3.0 <= 0.05, sw
+    assert sw[-1][1] == "qpsk", sw
+    # codeword errors in the current modulation: down at once, even during the guard after a step up
+    c = AcmController("bpsk,qpsk,16qam,64qam")
+    sw = _acm_replay(c, lambda t: 18.5, 2.0, cer_fn=lambda t: 0.3 if t > 1.5 else 0.0)
+    assert any(m == "bpsk" and 1.5 < t < 1.52 for t, m in sw), sw
+
+
 def test_radio_feedback_packet():
     """ACM report -> SISO BPSK frame (radio feedback link) -> parsed back, with CFO and noise."""
     from ofdm321.acm import FB, FB_MAGIC, FB_PACKET_BYTES, parse_feedback_packet

@@ -40,8 +40,18 @@ def parse_modcods(text):
 
 
 class AcmController:
-    def __init__(self, modcods, margin_db=1.0, hysteresis_db=1.0, hold_s=0.5, timeout_s=1.5, fec="rs"):
+    def __init__(self, modcods, margin_db=1.0, hysteresis_db=1.0, hold_s=0.5, timeout_s=1.5, fec="rs",
+                 debounce=True, down_reports=3, down_hold_s=0.03, up_guard_s=0.3):
+        """debounce (v0.6.1): an SNR-based step down needs >= down_reports consecutive low reports spanning
+        >= down_hold_s, counted only on reports of the current modulation; after a step up it is not
+        allowed until the RX confirms the new modulation + up_guard_s. Immediate: CER > 10 % and SNR below
+        the threshold of the next lower modulation (any report). debounce=False: v0.6.0 behaviour."""
         self.modcods = parse_modcods(modcods)
+        self.debounce, self.down_reports, self.down_hold, self.up_guard = debounce, down_reports, down_hold_s, up_guard_s
+        self.low_n, self.low_since = 0, None       # streak of fresh reports below the current threshold
+        self.last_dir = 0                          # +1 last switch was up, -1 down
+        self.confirmed_at = 0.0
+        self.ignored_dips = 0                      # low streaks that ended before a step down (debounce)
         self.thresholds = THRESHOLDS_BY_FEC[fec]
         self.margin, self.hyst, self.hold, self.timeout = margin_db, hysteresis_db, hold_s, timeout_s
         self.index = 0
@@ -81,19 +91,24 @@ class AcmController:
             self.last_report = now
             self.snr = snr_db
             old = self.index
-            if rx_mod is None or rx_mod == self.modcods[self.index]:
+            fresh = rx_mod is None or rx_mod == self.modcods[self.index]
+            if fresh:
                 if not self.confirmed:
                     self.latency.append(now - self.last_switch)
+                    self.confirmed_at = now
                 self.confirmed = True
             if not self.confirmed:
                 cer = 0.0
-            # down: below the current threshold, or many codeword errors
-            while self.index > 0 and (snr_db < self._need(self.index) or cer > 0.1):
-                self.index -= 1
-                cer = 0.0
-            # up: one step at a time, after hold_s above threshold + hysteresis
-            if self.index == old and self.confirmed and self.index + 1 < len(self.modcods) and \
-                    snr_db >= self._need(self.index + 1) + self.hyst:
+            if self.debounce:
+                self._down_debounced(snr_db, cer, fresh, now)
+            else:
+                # v0.6.0: down at once below the current threshold, or many codeword errors
+                while self.index > 0 and (snr_db < self._need(self.index) or cer > 0.1):
+                    self.index -= 1
+                    cer = 0.0
+            # up: one step at a time, after hold_s above threshold + hysteresis (fresh reports only)
+            if self.index == old and self.confirmed and (fresh or not self.debounce) \
+                    and self.index + 1 < len(self.modcods) and snr_db >= self._need(self.index + 1) + self.hyst:
                 self.up_since = self.up_since or now
                 if now - self.up_since >= self.hold:
                     self.index += 1
@@ -101,6 +116,8 @@ class AcmController:
             else:
                 self.up_since = None
             if self.index != old:
+                self.last_dir = 1 if self.index > old else -1
+                self.low_n, self.low_since = 0, None
                 self.switches += 1
                 self.last_switch = now
                 self.mod_since = now
@@ -109,6 +126,33 @@ class AcmController:
             if self.index != old or not self.history or now - self.history[-1][0] >= 0.1:
                 self.history.append((round(now, 3), round(snr_db, 2), self.modcods[self.index]))
             return self.modcods[self.index]
+
+
+    def _down_debounced(self, snr_db, cer, fresh, now):
+        """Step-down rules with debouncing (lock held)."""
+        if self.index == 0:
+            self.low_n, self.low_since = 0, None
+            return
+        if cer > 0.1:                                       # codeword errors in the current modulation
+            self.index -= 1
+            return
+        if snr_db < self._need(self.index - 1):             # below the lower threshold: emergency, any report
+            ok = [i for i in range(self.index) if self._need(i) <= snr_db]
+            self.index = ok[-1] if ok else 0                 # straight to the highest level that still fits
+            return
+        if not fresh:                                       # report about the old modulation: no SNR decision
+            return
+        if snr_db >= self._need(self.index):
+            if self.low_n:
+                self.ignored_dips += 1
+            self.low_n, self.low_since = 0, None
+            return
+        if self.last_dir > 0 and now - self.confirmed_at < self.up_guard:   # just stepped up: wait
+            return
+        self.low_n += 1
+        self.low_since = self.low_since if self.low_since is not None else now
+        if self.low_n >= self.down_reports and now - self.low_since >= self.down_hold:
+            self.index -= 1
 
 
 class FeedbackReceiver(threading.Thread):
