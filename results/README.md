@@ -38,6 +38,7 @@ không cần radio: script gọi thẳng `Modulator` / `Demodulator` (numpy), c�
 | `ldpc_sweep.csv`, `acm_ldpc_sweep.csv` | v0.6: các điểm như trên với mã trong LDPC 802.11n (siso/alamouti × 4 điều chế × AWGN/Rayleigh × tỉ lệ 1/2, 2/3, 3/4, 5/6; ACM + LDPC) |
 | `ldpc_vs_rs.png`, `ldpc_summary.json` | FER và thông lượng hữu ích: LDPC so với RS, ACM + LDPC so với ACM + RS; SNR ở FER 1% và lợi ích (dB) |
 | `acm_thresholds.json` | `tools/acm_calibrate.py`: CER theo SNR_eff và ngưỡng ACM cho RS và LDPC |
+| `rf_20261123.csv` / `.png` / `_summary.json` | `tools/rf_fer_curve.py`: lượt RF 23/11, tỉ lệ codeword lỗi mỗi giây theo −EVM, đè đường mô phỏng |
 | `stage_breakdown.csv` / `.png` / `.json` | `tools/link_budget.py`: tỉ lệ lỗi từng khâu của bộ thu (dò khung, định thời, SIG, RS, genie) theo SNR, bộ thu v0.5 và v0.6 |
 
 ## SNR cần để FER ≤ 1% (dB, giải mềm)
@@ -168,6 +169,28 @@ kênh cố định) cho thấy nút thắt là khâu dò khung, không phải d�
 - `sim_sweep` (bảng đầu trang, đo lại với bộ thu v0.6) xác nhận: siso AWGN BPSK / QPSK nay là 5,5 / 9,9 dB (v0.5:
   9,2 / 9,7), kênh cố định 2,6 / 6,6 dB (v0.5: 6,1 / 6,6); alamouti Rayleigh BPSK 11,4 dB (v0.5: 12,0).
 - Báo động giả khi chỉ có nhiễu (1 MS/s): siso khoảng 2 lần/s ở ngưỡng 0,35 (11 lần/s ở 0,3), 2 anten 0 lần/s.
+
+## RF 23/11 so với mô phỏng (`python3 tools/rf_fer_curve.py rf_data/20261123`)
+
+5 lượt RF (siso QPSK / 16QAM / 64QAM cố định, siso ACM + phản hồi radio, alamouti QPSK; v0.6.0, gain thay đổi theo bậc
+trong lượt). Mỗi điểm là một giây trong history của máy thu: tỉ lệ codeword lỗi theo −EVM do bộ thu ước lượng. Bỏ các
+giây đúng lúc đổi mức (EVM lệch > 1,5 dB so với giây trước/sau) và các giây ACM có đổi điều chế. Còn lại 354 giây.
+Đường mô phỏng lấy từ `fer_sweep.csv`; SNR được đổi sang EVM bằng chính bộ ước lượng EVM của bộ thu trên khung mô phỏng.
+
+−EVM (dB) cần để tỉ lệ codeword lỗi ≤ 1% (siso). RF có các mức rời rạc theo bậc gain, nên ngưỡng RF là một khoảng:
+
+| Điều chế | RF | Mô phỏng AWGN | Mô phỏng kênh cố định |
+|---|---|---|---|
+| BPSK (ACM) | 4–8 | 4,0 | 4,8 |
+| QPSK | 9–11 | 8,7 | 9,5 |
+| 16QAM | 14–15 | 17,1 | 15,7 |
+| 64QAM | 22–23 | 23,6 | 22,2 |
+
+- **RF khớp mô phỏng trong độ phân giải của các bậc gain (1–2 dB):** ở cùng EVM, RF không có thêm suy giảm nào mà
+  mô phỏng không thấy.
+- 28% codeword lỗi của lượt 16QAM cố định (và 48% của 64QAM) đến từ các bậc gain thấp (−EVM 9–13 dB với 16QAM,
+  12–21 dB với 64QAM), không phải từ bất thường của RF. Ở −EVM ≥ 16 dB, 16QAM mất ≤ 0,1%.
+- alamouti QPSK chỉ có dữ liệu ở −EVM 33–36 dB (0 lỗi trên 8654 codeword), nên chưa cho biết ngưỡng.
 
 ## Lưu ý khi đọc
 

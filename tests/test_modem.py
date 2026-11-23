@@ -631,6 +631,27 @@ def test_report_fields_and_stale_package_message():
         assert out.returncode == 2 and "rm -rf" in out.stderr and str(app / "ofdm321") in out.stderr, out
 
 
+def test_rf_fer_curve_points():
+    """tools/rf_fer_curve.py: FER per second from the RX history counters; seconds at a level step (EVM jump
+    to the previous/next second) and ACM seconds with a modulation change are left out."""
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from rf_fer_curve import points
+    evm = [-24, -24, -24, -20, -20, -20, -20]
+    hist, ok, rs = [], 0, 0
+    for i, e in enumerate(evm):
+        ok, rs = ok + 700, rs + (0 if e < -22 else 70)
+        hist.append({"t": i + 1.0, "ok": ok, "rs": rs, "crc": 0, "sig": 0, "evm_db": e, "modulation": "16qam"})
+    rep = {"settings": {"mimo_mode": "siso", "modulation": "16qam", "acm": False}, "history": hist,
+           "_path": Path("/x/20261123_154215_rx_rf_siso_16qam/report.json")}
+    rows = points(rep)
+    assert [r["t"] for r in rows] == [2.0, 5.0, 6.0], rows          # 3.0 and 4.0 sit at the -24 -> -20 step
+    assert rows[0]["fer"] == 0 and abs(rows[1]["fer"] - 70 / 770) < 1e-4
+    acm = dict(rep, settings={"mimo_mode": "siso", "modulation": "qpsk", "acm": True},
+               history=[dict(h, modulation="qpsk" if i < 5 else "16qam") for i, h in enumerate(hist)])
+    assert [r["t"] for r in points(acm)] == [2.0, 5.0], points(acm)   # 6.0: qpsk -> 16qam; 7.0: no next second
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

@@ -90,13 +90,14 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 30 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 31 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
 python3 tools/sim_sweep.py --fec ldpc             # LDPC part only -> results/ldpc_sweep.csv, ldpc_vs_rs.png (RS CSVs reused)
 python3 tools/acm_calibrate.py --out results/acm_thresholds.json   # ACM thresholds per inner code
 python3 tools/bench_sim.py --decoder              # LDPC decoder cw/s, Mb/s; bench_sim.py MIMO MOD RATE --fec ldpc [--acm]
+python3 tools/rf_fer_curve.py rf_data/<date>      # RF codeword error rate per second vs -EVM + sim curves -> results/rf_<date>.*
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
@@ -167,7 +168,8 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   ACM + LDPC +13 % mean goodput (same frame capacity). 1 MS/s real time OK (smux 64QAM tightest, x1.17 fixed 5/6,
   x1.68 ACM). Sims PASS: --fec ldpc fixed, ACM UDP, siso ACM radio; CI runs an LDPC sim too. 27 tests.
 - 2026-11-23 RF (v0.6.0, data in rf_data/20261123, not committed): siso QPSK RF_RX_VERIFIED (SNR 23, EVM -20);
-  siso 16QAM/64QAM fixed FAILED (rs_fail 28 % / 48 % at EVM -24 dB, far worse than sim); alamouti QPSK verified
+  siso 16QAM/64QAM fixed FAILED (rs_fail 28 % / 48 %: gain steps down to -EVM 9-13 / 12-21 dB; per second the
+  RF FER vs -EVM matches the sim within 1-2 dB, tools/rf_fer_curve.py -> results/rf_20261123.*); alamouti QPSK verified
   (SNR 34); siso ACM + radio feedback FAILED (920 missing, all in a 45-60 s step at SNR_eff ~5.7 dB) with loop
   0.398 s and BPSK<->QPSK chatter (75-90 s) at SNR_eff 18.5 dB.
 - v0.6.1 latency: sim with the USRP buffer emulation reproduced the loop (428 ms: TX video buffer 135 + feedback TX

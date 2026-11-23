@@ -1,0 +1,171 @@
+[
+ {
+  "mimo": "alamouti",
+  "mod": "qpsk",
+  "seconds": 18,
+  "runs": [
+   "20261123_155643_rx_rf_alamouti_qpsk"
+  ],
+  "minus_evm_range_db": [
+   33.4,
+   35.6
+  ],
+  "codewords": 8654,
+  "errors": 0,
+  "rf_minus_evm_fer1pct_db": 33.0,
+  "rf_between_db": [
+   null,
+   33.0
+  ],
+  "fer_per_bin": {
+   "33": 0.0,
+   "34": 0.0,
+   "35": 0.0
+  },
+  "sim_awgn_minus_evm_fer1pct_db": 10.0,
+  "sim_fixed_minus_evm_fer1pct_db": 9.2
+ },
+ {
+  "mimo": "siso",
+  "mod": "bpsk",
+  "seconds": 24,
+  "runs": [
+   "20261123_155138_rx_rf_siso_qpsk"
+  ],
+  "minus_evm_range_db": [
+   2.0,
+   9.9
+  ],
+  "codewords": 6382,
+  "errors": 353,
+  "rf_minus_evm_fer1pct_db": 8.0,
+  "rf_between_db": [
+   4.0,
+   8.0
+  ],
+  "fer_per_bin": {
+   "2": 0.359,
+   "3": 0.6,
+   "8": 0.001,
+   "9": 0.0
+  },
+  "sim_awgn_minus_evm_fer1pct_db": 4.0,
+  "sim_fixed_minus_evm_fer1pct_db": 4.8
+ },
+ {
+  "mimo": "siso",
+  "mod": "qpsk",
+  "seconds": 100,
+  "runs": [
+   "20261123_153911_rx_rf_siso_qpsk",
+   "20261123_155138_rx_rf_siso_qpsk"
+  ],
+  "minus_evm_range_db": [
+   7.3,
+   28.8
+  ],
+  "codewords": 48921,
+  "errors": 229,
+  "rf_minus_evm_fer1pct_db": 11.0,
+  "rf_between_db": [
+   9.0,
+   11.0
+  ],
+  "fer_per_bin": {
+   "7": 0.0379,
+   "8": 0.0354,
+   "11": 0.0,
+   "12": 0.0,
+   "14": 0.0008,
+   "15": 0.0,
+   "16": 0.0,
+   "19": 0.0,
+   "20": 0.0,
+   "23": 0.0,
+   "24": 0.0,
+   "26": 0.0,
+   "27": 0.0,
+   "28": 0.0
+  },
+  "sim_awgn_minus_evm_fer1pct_db": 8.7,
+  "sim_fixed_minus_evm_fer1pct_db": 9.5
+ },
+ {
+  "mimo": "siso",
+  "mod": "16qam",
+  "seconds": 128,
+  "runs": [
+   "20261123_154215_rx_rf_siso_16qam",
+   "20261123_155138_rx_rf_siso_qpsk"
+  ],
+  "minus_evm_range_db": [
+   9.3,
+   28.7
+  ],
+  "codewords": 110083,
+  "errors": 20365,
+  "rf_minus_evm_fer1pct_db": 15.0,
+  "rf_between_db": [
+   14.0,
+   15.0
+  ],
+  "fer_per_bin": {
+   "9": 1.0,
+   "10": 1.0,
+   "11": 1.0,
+   "12": 0.9998,
+   "13": 1.0,
+   "15": 0.0064,
+   "16": 0.0012,
+   "19": 0.0,
+   "20": 0.0,
+   "21": 0.0,
+   "23": 0.0005,
+   "24": 0.0,
+   "26": 0.0,
+   "27": 0.0,
+   "28": 0.0
+  },
+  "sim_awgn_minus_evm_fer1pct_db": 17.1,
+  "sim_fixed_minus_evm_fer1pct_db": 15.7
+ },
+ {
+  "mimo": "siso",
+  "mod": "64qam",
+  "seconds": 84,
+  "runs": [
+   "20261123_154512_rx_rf_siso_64qam"
+  ],
+  "minus_evm_range_db": [
+   12.8,
+   28.6
+  ],
+  "codewords": 86763,
+  "errors": 39811,
+  "rf_minus_evm_fer1pct_db": 23.0,
+  "rf_between_db": [
+   22.0,
+   23.0
+  ],
+  "fer_per_bin": {
+   "12": 1.0,
+   "13": 1.0,
+   "14": 1.0,
+   "15": 1.0,
+   "16": 1.0,
+   "17": 1.0,
+   "18": 1.0,
+   "19": 0.3586,
+   "20": 0.3907,
+   "21": 0.3733,
+   "23": 0.0005,
+   "24": 0.0,
+   "25": 0.0,
+   "26": 0.0,
+   "27": 0.0,
+   "28": 0.0
+  },
+  "sim_awgn_minus_evm_fer1pct_db": 23.6,
+  "sim_fixed_minus_evm_fer1pct_db": 22.2
+ }
+]
