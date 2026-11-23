@@ -1,5 +1,6 @@
 """GNU Radio blocks: 2-channel MIMO OFDM source/sink, 2x2 channel simulator,
 video PDU receiver. All PHY maths lives in modem.py (numpy)."""
+import bisect
 from collections import deque
 import logging
 import queue
@@ -18,12 +19,149 @@ from .protocol import DATA, IDLE, pack_packet, unpack_packet
 LOG = logging.getLogger(__name__)
 
 
-class MimoTxSource(gr.sync_block):
+def _stats_ms(values):
+    """median / p95 / max of latencies (s) in ms, or None."""
+    v = sorted(values)
+    if not v:
+        return None
+    return {"median_ms": round(1e3 * v[len(v) // 2], 1), "p95_ms": round(1e3 * v[min(len(v) - 1, int(0.95 * len(v)))], 1),
+            "max_ms": round(1e3 * v[-1], 1), "n": len(v)}
+
+
+class AirClock:
+    """Maps the sample index of a stream to the host monotonic time at which that sample is on the
+    air (TX) or was sampled (RX). RF: sample 0 is at device time `start_delay_s` (timed start), mapped
+    once from the host time of set_time_now() and refined every second with get_time_now(). Simulation:
+    TxDeviceSim starts it when it emits its first sample. Underflows/overflows shift the real mapping
+    (not tracked)."""
+
+    def __init__(self, rate):
+        self.rate = float(rate)
+        self.t0 = None                      # host monotonic time of sample 0
+        self.resyncs = 0
+        self.max_correction = 0.0
+
+    def start(self, t0):
+        self.t0 = float(t0)
+
+    def time_of(self, k):
+        return None if self.t0 is None else self.t0 + k / self.rate
+
+    def sync_device(self, device_now_s, start_s, host_now):
+        """device time now (get_time_now) -> t0; keeps the largest correction for the report."""
+        t0 = host_now - (device_now_s - start_s)
+        if self.t0 is not None:
+            self.max_correction = max(self.max_correction, abs(t0 - self.t0))
+        self.t0 = t0
+        self.resyncs += 1
+
+
+class TxPacing:
+    """Shared by the TX sources: never produce more than `lead_s` ahead of the air time of the
+    produced samples (lead_s = 0: produce as fast as the downstream buffers accept, v0.5 behaviour,
+    which fills the GNU Radio and USRP buffers). Also logs the buffer delay of every frame:
+    air time of its first sample - host time it was built."""
+
+    def _pacing_init(self, rate, clock, lead_s):
+        self.rate = float(rate)
+        self.clock = clock
+        self.lead_s = float(lead_s or 0.0)
+        self.buffer_lat = deque(maxlen=2000)      # s, per frame: built -> on air
+        self.buffer_lat_tick = []                 # since the last tick (history)
+        self.late = 0                             # frames built after their air time (underflow risk)
+
+    def _allowed(self, n, multiple):
+        """Samples this work() call may produce (a multiple of `multiple`, never 0: returning 0 would
+        leave the GNU Radio scheduler waiting for a buffer notification that never comes). Sleeps in
+        short steps until the air clock allows one more chunk."""
+        if self.lead_s <= 0:
+            return n
+        while True:
+            now = time.monotonic()
+            if self.clock is None or self.clock.t0 is None:
+                budget = self.lead_s * self.rate - self.produced          # before the start: one lead
+                if budget < multiple:                                       # clock not started yet
+                    time.sleep(0.005)
+                    continue
+            else:
+                budget = (now - self.clock.t0 + self.lead_s) * self.rate - self.produced
+            # at least ~5 ms per call (or what fits): tiny chunks would make the thread spin
+            need = min(n, max(multiple, int(0.005 * self.rate) // multiple * multiple))
+            if budget >= need:
+                return min(n, int(budget) // multiple * multiple)
+            # sleep until ~5 ms of samples may be produced (fewer wake-ups: GIL, see TxDeviceSim)
+            time.sleep(max(0.004, (multiple - budget) / self.rate))
+
+    def _frame_built(self, k):
+        """Frame whose first sample has index k was just built."""
+        if self.clock is None or self.clock.t0 is None:
+            return None
+        lat = self.clock.time_of(k) - time.monotonic()
+        with self.lock:
+            self.buffer_lat.append(lat)
+            self.buffer_lat_tick.append(lat)
+            self.late += lat < 0
+        return lat
+
+    def latency_tick(self):
+        """Buffer delay stats since the previous call (one history row)."""
+        with self.lock:
+            v, self.buffer_lat_tick = self.buffer_lat_tick, []
+        return _stats_ms(v)
+
+    def latency_report(self):
+        with self.lock:
+            v = list(self.buffer_lat)
+        return {"buffer": _stats_ms(v), "lead_ms": round(1e3 * self.lead_s, 1), "late_frames": self.late}
+
+
+class TxDeviceSim(gr.sync_block):
+    """Simulation of the USRP TX side: emits samples at the real sample rate (the air clock starts
+    at its first sample). The GNU Radio buffer in front of it (set_min_output_buffer of the source,
+    `sim_tx_device_samples`) plays the role of the device/host TX buffers, so a source without
+    pacing runs that far ahead, as on RF."""
+
+    def __init__(self, nchan, rate, clock):
+        gr.sync_block.__init__(self, "TX device (sim)", [np.complex64] * nchan, [np.complex64] * nchan)
+        self.rate, self.clock = float(rate), clock
+        self.out = 0
+        self.GRAIN = 0.01
+        self.underruns = 0
+        self._late = False
+
+    def work(self, input_items, output_items):
+        n = len(output_items[0])
+        now = time.monotonic()
+        if self.clock.t0 is None:
+            self.clock.start(now)
+        due = (now - self.clock.t0) * self.rate - self.out        # samples that should be on air by now
+        if due > n + 0.005 * self.rate:                           # input arrives late: the device underflows
+            if not self._late:
+                self.underruns += 1
+            self._late = True
+        else:
+            self._late = False
+        # 10 ms granularity and sleeps >= 4 ms: frequent short wake-ups would steal the GIL from the
+        # demodulator threads of the same process
+        grain = self.GRAIN * self.rate
+        while due < -0.5 * grain:          # more than half a grain ahead: sleep (never return 0, the
+            time.sleep(max(0.004, (-due - 0.5 * grain) / self.rate))     # scheduler would stall)
+            due = (time.monotonic() - self.clock.t0) * self.rate - self.out
+        allow = int(due + grain)                                  # emit up to one grain ahead
+        k = min(n, allow)
+        for i, o in zip(input_items, output_items):
+            o[:k] = i[:k]
+        self.out += k
+        return k
+
+
+class MimoTxSource(TxPacing, gr.sync_block):
     """Application packets -> continuous 2-channel baseband (IDLE frames when empty)."""
 
-    def __init__(self, settings, session, throttle=False, acm=None):
+    def __init__(self, settings, session, throttle=False, acm=None, clock=None, lead_s=0.0):
         """acm: None (fixed modulation) or an acm.AcmController that picks the
-        modulation of every frame (frames then carry several packets)."""
+        modulation of every frame (frames then carry several packets).
+        clock / lead_s: AirClock of this stream and the pacing lead (TxPacing)."""
         gr.sync_block.__init__(self, "MIMO OFDM TX source", [], [np.complex64, np.complex64])
         s = settings
         self.acm = acm
@@ -58,8 +196,12 @@ class MimoTxSource(gr.sync_block):
         self.lock = threading.Lock()
         self.frames = self.data_frames = self.enqueued_data = 0
         self.queue_max = 0
+        self._pacing_init(s.sample_rate, clock, lead_s)
+        self.switch_air = deque(maxlen=500)       # ACM: controller switch -> first frame of it on air (s)
+        self.switch_air_tick = []
+        self.prev_mod = None
         self.set_output_multiple(SYM)
-        self.set_min_noutput_items(8 * SYM)
+        self.set_min_noutput_items(SYM if self.lead_s > 0 else 8 * SYM)
 
     def enqueue(self, raw, stop_event):
         while not stop_event.is_set():
@@ -75,7 +217,7 @@ class MimoTxSource(gr.sync_block):
 
     def work(self, input_items, output_items):
         out0, out1 = output_items
-        n = len(out0)
+        n = self._allowed(len(out0), SYM)
         if self.throttle:
             if self.t0 is None:
                 self.t0 = time.monotonic()
@@ -86,7 +228,7 @@ class MimoTxSource(gr.sync_block):
         while written < n:
             if self.pos >= self.pending.shape[1]:
                 if self.acm is not None:
-                    self._next_acm_frame()
+                    self._next_acm_frame(self.produced + written)
                 else:
                     try:
                         raw = self.packets.get_nowait()
@@ -98,6 +240,7 @@ class MimoTxSource(gr.sync_block):
                         self.frames += 1
                         self.data_frames += raw[5] == DATA
                         self.packets_sent += raw[5] != IDLE
+                    self._frame_built(self.produced + written)
                 self.pos = 0
             take = min(n - written, self.pending.shape[1] - self.pos)
             out0[written:written + take] = self.pending[0, self.pos:self.pos + take]
@@ -112,8 +255,16 @@ class MimoTxSource(gr.sync_block):
         loop = lat[len(lat) // 2] if lat else 0.0
         return min(0.5, max(self.resend_min_s, 1.5 * loop))
 
-    def _next_acm_frame(self):
+    def _next_acm_frame(self, k=0):
         m = self.acm.modulation
+        lat = self._frame_built(k)
+        if self.prev_mod is not None and m != self.prev_mod and lat is not None:
+            # this frame is the first of the new modulation: switch decision -> on air
+            d = time.monotonic() + lat - self.acm.last_switch
+            with self.lock:
+                self.switch_air.append(d)
+                self.switch_air_tick.append(d)
+        self.prev_mod = m
         n = codewords_per_frame(self.mod.mode, m)
         rank = self.acm.modcods.index(m)
         if self.resend_min_s > 0:
@@ -158,6 +309,7 @@ class MimoTxSource(gr.sync_block):
                    "tx_enqueued_data": self.enqueued_data, "tx_queue": self.packets.qsize(),
                    "tx_queue_max": self.queue_max, "tx_queue_size": self.packets.maxsize,
                    "tx_packets": self.packets_sent, "frame_samples": self.mod.frame_len}
+            out["tx_late_frames"] = self.late
             if self.acm is not None:
                 out.update(acm_modulation=self.acm.modulation, acm_snr_db=self.acm.snr,
                            acm_switches=self.acm.switches, acm_frames=dict(self.mod_frames),
@@ -209,12 +361,19 @@ class MimoRxSink(gr.sync_block):
         self.interleaver = None
         self.snr = self.evm = self.cond = None
         self.rx_rms = 0.0
+        # latency: absolute sample index of buf[0], arrival time of every input chunk
+        self.dropped = 0
+        self.arr_idx, self.arr_t = [], []      # absolute index after each input chunk, its host time
+        self.clock = None                      # AirClock of the RX stream (RF), for the ingest delay
+        self.proc_lat, self.ingest_lat = deque(maxlen=4000), deque(maxlen=4000)
+        self.proc_tick, self.ingest_tick = [], []
 
     # -- buffer ---------------------------------------------------------
     def _drop(self, count):
         count = min(count, self.n)
         self.buf[:, :self.n - count] = self.buf[:, count:self.n]
         self.n -= count
+        self.dropped += count
         if self.expected is not None:
             self.expected -= count
 
@@ -230,6 +389,11 @@ class MimoRxSink(gr.sync_block):
         self.buf[0, self.n:self.n + m] = a
         self.buf[1, self.n:self.n + m] = b
         self.n += m
+        self.arr_idx.append(self.dropped + self.n)
+        self.arr_t.append(time.monotonic())
+        if len(self.arr_idx) > 4096:                       # forget chunks already dropped from the buffer
+            cut = max(1, bisect.bisect_left(self.arr_idx, self.dropped))
+            del self.arr_idx[:cut], self.arr_t[:cut]
         if m:
             self.rx_rms = float(np.sqrt(np.mean(np.abs(a[-4096:]) ** 2)))
         self._process()
@@ -277,6 +441,7 @@ class MimoRxSink(gr.sync_block):
                 return True
             return False
         results = self.demod.demodulate_batch(self.buf, starts, metrics)
+        self._log_latency(starts)
         for s0, (packet, info) in zip(starts, results):
             reason = info["reason"]
             with self.lock:
@@ -321,6 +486,32 @@ class MimoRxSink(gr.sync_block):
         self.expected = SYM
         return True
 
+    def _log_latency(self, starts):
+        """Per decoded frame: arrival of its last sample -> decoded (processing: ring buffer + batch),
+        and, with an AirClock, sampled at the antenna -> arrival (USRP + UHD + GNU Radio buffers)."""
+        now = time.monotonic()
+        for s0 in starts:
+            end = self.dropped + s0 + self.body
+            j = min(bisect.bisect_left(self.arr_idx, end), len(self.arr_idx) - 1)
+            t_arr = self.arr_t[j]
+            with self.lock:
+                self.proc_lat.append(now - t_arr)
+                self.proc_tick.append(now - t_arr)
+                if self.clock is not None and self.clock.t0 is not None:
+                    d = t_arr - self.clock.time_of(end)
+                    self.ingest_lat.append(d)
+                    self.ingest_tick.append(d)
+
+    def latency_tick(self):
+        with self.lock:
+            p, i = self.proc_tick, self.ingest_tick
+            self.proc_tick, self.ingest_tick = [], []
+        return {"proc": _stats_ms(p), "ingest": _stats_ms(i)}
+
+    def latency_report(self):
+        with self.lock:
+            return {"proc": _stats_ms(self.proc_lat), "ingest": _stats_ms(self.ingest_lat)}
+
     def snapshot(self):
         with self.lock:
             return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
@@ -336,12 +527,12 @@ class MimoRxSink(gr.sync_block):
                     "modulation": self.modulation, "age_s": age}
 
 
-class FeedbackRadioSource(gr.sync_block):
+class FeedbackRadioSource(TxPacing, gr.sync_block):
     """RX machine, radio feedback (--fb-link radio): continuous SISO BPSK OFDM frames on
     N321 #2 port RF1 TX/RX (channel B:0), each carrying the latest ACM report (acm.FeedbackReporter).
     About 133 frames/s at 500 kS/s: the TX sees a fresh report every ~7.5 ms."""
 
-    def __init__(self, settings, provider, throttle=False):
+    def __init__(self, settings, provider, throttle=False, clock=None, lead_s=0.0):
         gr.sync_block.__init__(self, "ACM radio feedback source", [], [np.complex64])
         from dataclasses import replace
         fs = replace(settings, mimo_mode="siso", modulation="bpsk", acm=False)
@@ -352,11 +543,13 @@ class FeedbackRadioSource(gr.sync_block):
         self.throttle, self.rate = throttle, settings.fb_rate
         self.t0, self.produced = None, 0
         self.frames = 0
+        self.lock = threading.Lock()
+        self._pacing_init(settings.fb_rate, clock, lead_s)    # a report waits in the buffers this long
         self.set_output_multiple(SYM)
 
     def work(self, input_items, output_items):
         out = output_items[0]
-        n = len(out)
+        n = self._allowed(len(out), SYM)
         if self.throttle:
             if self.t0 is None:
                 self.t0 = time.monotonic()
@@ -369,6 +562,7 @@ class FeedbackRadioSource(gr.sync_block):
                 self.pending = self.mod.frame(self.provider())[0]
                 self.pos = 0
                 self.frames += 1
+                self._frame_built(self.produced + written)
             take = min(n - written, self.pending.size - self.pos)
             out[written:written + take] = self.pending[self.pos:self.pos + take]
             written += take

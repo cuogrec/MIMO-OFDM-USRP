@@ -210,3 +210,41 @@ python3 tools/plot_run.py --latest                               # lượt mới
 Ảnh `plot_run.png` được lưu vào thư mục của từng lượt chạy, gồm 4 khung: SNR/SNR_eff, điều chế (dạng bậc),
 bitrate video so với dung lượng (kèm hàng đợi TX), lỗi/mất gói/phát lại mỗi giây. TX và RX được ghép theo
 đồng hồ máy, nên khi chạy trên hai PC, độ khớp phụ thuộc đồng hồ hai máy.
+
+## 7. Độ trễ vòng ACM và `--tx-lead-ms` (v0.6.1)
+
+Lượt RF 23/11 (v0.6.0, siso + phản hồi radio) có độ trễ vòng trung vị 0,398 s, tính từ lúc máy phát đổi điều chế
+tới lúc báo cáo đầu tiên về điều chế mới quay lại máy phát. Mô phỏng cũ chỉ cho 0,04–0,09 s. Nguyên nhân: cả
+`MimoTxSource` (video, máy phát) và `FeedbackRadioSource` (phản hồi, máy thu) đều sinh mẫu nhanh hết mức các bộ đệm
+GNU Radio + UHD + USRP cho phép. Mẫu vừa tạo phải xếp hàng sau cả bộ đệm, nên một khung (hay một báo cáo SNR) chỉ
+lên sóng sau một thời gian bằng dung lượng bộ đệm chia cho tốc độ mẫu. Với khoảng 131 nghìn mẫu mỗi luồng, phần này là
+0,13 s ở 1 MS/s (video) cộng 0,26 s ở 500 kS/s (phản hồi), khoảng 0,39 s. Đây là giả thuyết khớp với số đo RF; lượt RF
+tới sẽ đo trực tiếp.
+
+**Đo từng đoạn** (ghi vào `report.json` → `latency`, và mỗi giây trong `history`):
+
+| Đoạn | Ở đâu | Cách đo |
+|---|---|---|
+| Bộ đệm TX video (`tx_video.buffer`, `tx_buffer_ms`) | máy phát | thời điểm lên sóng của mẫu đầu khung − lúc tạo khung. Thời điểm lên sóng = mốc start của USRP (timed start, `get_time_now()` chỉnh lại mỗi giây) + chỉ số mẫu / Fs |
+| Đổi điều chế → lên sóng (`acm_switch_to_air`) | máy phát | quyết định của bộ điều khiển → khung đầu tiên của điều chế mới lên sóng |
+| Xử lý RX (`rx.proc`, `rx_proc_ms`) | máy thu | mẫu cuối khung vào bộ đệm vòng 2^18 → giải xong (lô tới 16 khung) |
+| Anten → bộ đệm RX (`rx.ingest`, chỉ RF) | máy thu | lúc mẫu vào `MimoRxSink` − thời điểm lấy mẫu theo đồng hồ USRP |
+| Bộ đệm TX phản hồi (`feedback_tx.buffer`, `fb_tx_buffer_ms`) | máy thu | lúc báo cáo lên sóng − lúc tạo báo cáo |
+| Xử lý phía nhận phản hồi (`feedback_rx.proc`) | máy phát | như xử lý RX, ở 500 kS/s |
+| Cả vòng (`acm_loop`) | máy phát | đổi điều chế → báo cáo đầu tiên với điều chế mới |
+
+**Sửa:** hai nguồn phát không sinh mẫu sớm hơn thời điểm lên sóng quá `--tx-lead-ms` (mặc định 30 ms; đặt cho cả hai
+bên vì máy thu cũng phát phản hồi). Bộ đệm đầu ra GNU Radio của nguồn được giới hạn ở `tx_buffer_samples` (8192).
+`--tx-lead-ms 0` quay về cách cũ.
+
+**Mô phỏng có cùng cơ chế:** `TxDeviceSim` phát mẫu đúng tốc độ thực, và trước nó là một bộ đệm GNU Radio cỡ bộ đệm USRP
+(`--sim-dev-buffer`, mặc định 131072 mẫu mỗi luồng). Kết quả, siso + phản hồi radio, SNR theo bậc 30/22/14/22/30 dB:
+
+| | Vòng ACM | Bộ đệm TX video | Đổi → lên sóng | Xử lý RX | Bộ đệm TX phản hồi | Xử lý nhận phản hồi |
+|---|---|---|---|---|---|---|
+| `--tx-lead-ms 0` (như v0.6.0) | 428 ms | 135 ms | 137 ms | 3,5 ms | 267 ms | 3,0 ms |
+| `--tx-lead-ms 30` (mặc định) | **78 ms** | 25 ms | 29 ms | 3,4 ms | 24 ms | 2,9 ms |
+
+Phần còn lại của vòng là thời lượng một khung phản hồi (7,5 ms), chờ khung phản hồi kế tiếp, và lọc EWMA của máy thu.
+Nếu log của UHD in `U` (underflow) hoặc `tx_late_frames` tăng, nghĩa là Python không kịp đáp ứng mức lead đặt ra; khi
+đó tăng `--tx-lead-ms` lên 50–80.

@@ -94,6 +94,11 @@ class Settings:
     ts_muxrate: int = 260_000
     fec_mode: str = "rs8_8"
     queue_packets: int = 64
+    # --- TX latency (v0.6.1) ---------------------------------------------
+    tx_lead_ms: float = 30.0         # TX sources build samples at most this far ahead of their air time (0 = v0.6:
+                                     # as far as the GNU Radio + USRP buffers accept, ~0.13 s video + 0.26 s feedback)
+    tx_buffer_samples: int = 8192    # RF: GNU Radio max output buffer of the TX sources (items)
+    sim_tx_device_samples: int = 131072   # sim: emulated USRP TX buffer per stream (reproduces the RF delay)
     udp_port: int = 5002
     # --- simulation channel ---------------------------------------------
     sim_snr_db: float = 25.0
@@ -150,6 +155,9 @@ class Settings:
             raise ValueError("fec must be rs or ldpc, ldpc_rate 1/2, 2/3, 3/4 or 5/6")
         if not 1 <= self.ldpc_iter <= 100:
             raise ValueError("ldpc_iter must be 1..100")
+        if not 0 <= self.tx_lead_ms <= 1000 or not 1024 <= self.tx_buffer_samples <= 1 << 22 \
+                or not 0 <= self.sim_tx_device_samples <= 1 << 23:
+            raise ValueError("tx_lead_ms 0..1000, tx_buffer_samples 1024..4M, sim_tx_device_samples 0..8M")
         if not 0.2 <= self.sync_threshold <= 0.95:
             raise ValueError("sync_threshold must be in [0.2, 0.95]")
         if self.clock_source not in ("internal", "external", "gpsdo") or \

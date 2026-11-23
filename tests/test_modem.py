@@ -509,6 +509,47 @@ def test_ldpc_beats_rs_at_low_snr():
     print("  siso AWGN BPSK 1.5 dB (4.5 dB in tools terms), 40 frames lost:", lost)
 
 
+def test_tx_pacing_limits_buffer_delay():
+    """v0.6.1: a TX source in front of an emulated USRP (TxDeviceSim, 64k-sample buffer) runs ~65 ms ahead
+    without pacing; with --tx-lead-ms 30 the frames reach the air ~<= 30 ms after they are built, at
+    real-time rate, and the paced blocks do not spin (CPU)."""
+    import time
+    try:
+        from gnuradio import gr, blocks
+    except ImportError:
+        print("  (no GNU Radio: skipped)")
+        return
+    from ofdm321.blocks import AirClock, MimoTxSource, TxDeviceSim
+    from ofdm321.config import load_settings
+    out = {}
+    for lead in (0.0, 0.03):
+        s = load_settings(None, mimo_mode="siso", sample_rate=500e3)
+        clk = AirClock(s.sample_rate)
+        src = MimoTxSource(s, 1, clock=clk, lead_s=lead)
+        dev = TxDeviceSim(2, s.sample_rate, clk)
+        src.set_min_output_buffer(65536)
+        tb = gr.top_block()
+        sinks = [blocks.null_sink(gr.sizeof_gr_complex) for _ in range(2)]
+        for i in (0, 1):
+            tb.connect((src, i), (dev, i))
+            tb.connect((dev, i), sinks[i])
+        tb.start()
+        time.sleep(0.5)
+        f0, c0, t0 = src.frames, time.process_time(), time.monotonic()
+        time.sleep(1.5)
+        fps = (src.frames - f0) / (time.monotonic() - t0)
+        cpu = (time.process_time() - c0) / 1.5
+        tb.stop()
+        tb.wait()
+        lat = src.latency_report()["buffer"]
+        out[lead] = (lat["median_ms"], round(fps), round(cpu, 2))
+        need = s.sample_rate / src.mod.frame_len
+        assert abs(fps - need) < 0.1 * need, (lead, fps, need)
+        assert cpu < 0.6, (lead, cpu)
+    assert out[0.0][0] > 100 and out[0.03][0] <= 36, out     # 65536 samples at 500 kS/s = 131 ms
+    print("  TX buffer delay median / frames/s / CPU: no pacing", out[0.0], "| lead 30 ms", out[0.03])
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

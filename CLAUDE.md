@@ -1,7 +1,7 @@
 # CLAUDE.md — MIMO-OFDM-USRP
 
 Real-time video over an OFDM link (2x2 MIMO or SISO) between two USRP N321, written in
-Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.0.
+Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.1.
 
 **Reply to the user in Vietnamese.** Short, concrete answers; give exact commands to run.
 
@@ -78,13 +78,17 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
   `port_label()` (RF0/RF1 names) and `antenna_summary()` (start-up line "Cắm anten ...").
 - `config.py` — `Settings` dataclass + `config/default.json`; every CLI option maps to a field.
 - `rxgui.py` — `--gui`: constellation + 2-channel spectrum + status line.
+- TX latency (v0.6.1): `blocks.AirClock` maps sample index -> air time (USRP timed start + get_time_now()),
+  `TxPacing` keeps both TX sources <= `--tx-lead-ms` (30) ahead of the air; `TxDeviceSim` + a GNU Radio buffer of
+  `--sim-dev-buffer` (131072) samples emulates the USRP TX buffer in sim. `report.json` -> `latency` (TX buffer,
+  switch->air, RX processing/ingest, feedback TX buffer, ACM loop). `--tx-lead-ms 0` = v0.6.0 behaviour.
 - `runner_split.py` — TX/RX programs, write `runs/<stamp>_<tx|rx>_<rf|sim>_<mimo>_<mod>/report.json`
   (v0.5: per-second `history`, TX `video` section, `clock` reference). `tools/plot_run.py` plots TX and/or RX reports.
 
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 27 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 28 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -117,7 +121,7 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-20, v0.6.0)
+## Status (2026-11-23, v0.6.1)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
   EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
@@ -157,6 +161,12 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   LDPC 5/6 vs RS at FER 1 %: +1.4..3.9 dB AWGN, +2.3..4.4 dB alamouti Rayleigh, +6.7..13 dB siso Rayleigh;
   ACM + LDPC +13 % mean goodput (same frame capacity). 1 MS/s real time OK (smux 64QAM tightest, x1.17 fixed 5/6,
   x1.68 ACM). Sims PASS: --fec ldpc fixed, ACM UDP, siso ACM radio; CI runs an LDPC sim too. 27 tests.
+- 2026-11-23 RF (v0.6.0, data in rf_data/20261123, not committed): siso QPSK RF_RX_VERIFIED (SNR 23, EVM -20);
+  siso 16QAM/64QAM fixed FAILED (rs_fail 28 % / 48 % at EVM -24 dB, far worse than sim); alamouti QPSK verified
+  (SNR 34); siso ACM + radio feedback FAILED (920 missing, all in a 45-60 s step at SNR_eff ~5.7 dB) with loop
+  0.398 s and BPSK<->QPSK chatter (75-90 s) at SNR_eff 18.5 dB.
+- v0.6.1 latency: sim with the USRP buffer emulation reproduced the loop (428 ms: TX video buffer 135 + feedback TX
+  buffer 267 ms); `--tx-lead-ms 30` (default) -> 78 ms (buffers 25 + 24 ms). Not yet verified on RF.
 
 ## Next steps (agreed direction)
 

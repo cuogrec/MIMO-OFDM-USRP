@@ -159,7 +159,9 @@ def configure_direction(dev, settings, kind):
               "clock_source": s.clock_source, "time_source": s.time_source}
     if s.time_source == "gpsdo":
         report["gps_locked"] = bool(dev.get_mboard_sensor("gps_locked", 0).to_bool())
+    t = time.monotonic()
     dev.set_time_now(uhd.time_spec(0.0), uhd.ALL_MBOARDS)
+    report["t_set_monotonic"] = (t + time.monotonic()) / 2   # device time 0 (AirClock)
     dev.set_start_time(uhd.time_spec(s.start_delay_s))
     return report
 
@@ -225,7 +227,9 @@ def configure_streams(streams, settings):
     report["clock_source"], report["time_source"] = s.clock_source, s.time_source
     if s.time_source == "gpsdo":
         report["gps_locked"] = bool(first.get_mboard_sensor("gps_locked", 0).to_bool())
+    t = time.monotonic()
     first.set_time_now(uhd.time_spec(0.0), uhd.ALL_MBOARDS)
+    report["t_set_monotonic"] = (t + time.monotonic()) / 2   # device time 0 (AirClock)
     for st in streams:
         st["dev"].set_start_time(uhd.time_spec(s.start_delay_s))
     return report

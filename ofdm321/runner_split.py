@@ -21,7 +21,7 @@ import time
 from gnuradio import blocks, gr
 
 from . import __version__
-from .blocks import MimoChannelSim, MimoRxSink, MimoTxSource, SfoResampler, VideoReceiver
+from .blocks import AirClock, MimoChannelSim, MimoRxSink, MimoTxSource, SfoResampler, TxDeviceSim, VideoReceiver
 from .config import app_root, load_settings
 from .media import encoder_command, require_ffmpeg, sha256_file
 from .runner import Encoder, capacity
@@ -51,12 +51,18 @@ def common_args(p):
     p.add_argument("--sync", choices=("internal", "gpsdo", "external"),
                    help="clock+time source of THIS N321 (gpsdo: lock to GPS, needs antenna on GPS port)")
     p.add_argument("--zmq", dest="zmq_addr")
+    p.add_argument("--tx-lead-ms", dest="tx_lead_ms", type=float,
+                   help="TX sources (video TX, radio feedback on the RX PC) build samples at most this far ahead "
+                        "of the air time (30; 0 = v0.6 behaviour: fill the USRP buffers, ~0.4 s ACM loop)")
+    p.add_argument("--sim-dev-buffer", dest="sim_tx_device_samples", type=int,
+                   help="SIM: emulated USRP TX buffer in samples per stream (131072, like the RF loop delay)")
     p.add_argument("--name", default="")
 
 
 def settings_from(a, extra):
     keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr",
-            "acm", "acm_port", "fb_link", "fb_freq", "fb_rate", "fec", "ldpc_rate"] + extra
+            "acm", "acm_port", "fb_link", "fb_freq", "fb_rate", "fec", "ldpc_rate", "tx_lead_ms",
+            "sim_tx_device_samples"] + extra
     over = {k: getattr(a, k) for k in keys}
     if a.sync:
         over.update(clock_source=a.sync, time_source=a.sync)
@@ -189,8 +195,12 @@ def main_tx(argv=None):
                 fb = FeedbackReceiver(ctl, s.acm_port, session)
                 fb.start()
                 LOG.info("ACM: waiting for RX feedback on UDP %d (starts with %s)", s.acm_port, ctl.modulation)
-        src = MimoTxSource(s, session, throttle=(a.mode == "sim"), acm=ctl)
+        from .blocks import AirClock, TxDeviceSim, _stats_ms
+        vclock = AirClock(s.sample_rate)
+        src = MimoTxSource(s, session, acm=ctl, clock=vclock, lead_s=s.tx_lead_ms / 1e3)
         keep = [src]
+        dev_sim = None
+        resync = []                          # RF: (usrp, AirClock) refined once a second
         tx_chans = 2
         if a.mode == "rf":
             from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
@@ -212,21 +222,32 @@ def main_tx(argv=None):
                 tb.connect((fusrp, 0), (fbrx, 0))
                 tb.connect(nul_rx, (fbrx, 1))
                 keep += [usrp, fusrp, fbrx, nul_tx, nul_rx]
+                fbrx.clock = AirClock(s.fb_rate)
+                fbrx.clock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+                resync.append((fusrp, fbrx.clock))
             else:
                 usrp = make_radio(s, "tx")
                 report["hardware"] = configure_direction(usrp, s, "tx")
                 tb.connect((src, 0), (usrp, 0))
                 tb.connect((src, 1), (usrp, 1))
                 keep.append(usrp)
+            vclock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+            resync.append((usrp, vclock))
+            src.set_max_output_buffer(s.tx_buffer_samples)
         else:
             from gnuradio import zeromq
+            # USRP emulation: real-time output, and a buffer in front of it as large as the device's
+            dev_sim = TxDeviceSim(2, s.sample_rate, vclock)
+            if s.sim_tx_device_samples:
+                src.set_min_output_buffer(s.sim_tx_device_samples)
             il = blocks.interleave(gr.sizeof_gr_complex, 1)
             sink = zeromq.push_sink(gr.sizeof_gr_complex, 1, s.zmq_addr, 100, False, -1)
-            tb.connect((src, 0), (il, 0))
-            tb.connect((src, 1), (il, 1))
+            for i in (0, 1):
+                tb.connect((src, i), (dev_sim, i))
+                tb.connect((dev_sim, i), (il, i))
             tb.connect(il, sink)
-            keep += [il, sink]
-            report["hardware"] = {"zmq": s.zmq_addr}
+            keep += [il, sink, dev_sim]
+            report["hardware"] = {"zmq": s.zmq_addr, "sim_tx_device_samples": s.sim_tx_device_samples}
             if radio_fb:
                 # simulated feedback link: RX process PUSH -> here, AWGN + CFO like a real carrier
                 from dataclasses import replace
@@ -307,6 +328,16 @@ def main_tx(argv=None):
                 elif state == "ok":
                     LOG.info("Đã nhận phản hồi radio sau %.1f s (link SNR %s dB)", watchdog.first_frame_s,
                              None if fr["snr_db"] is None else round(fr["snr_db"], 1))
+            lat = src.latency_tick()
+            row["tx_buffer_ms"] = lat["median_ms"] if lat else None
+            if fbrx is not None:
+                fl = fbrx.latency_tick()
+                row["fb_rx_proc_ms"] = fl["proc"]["median_ms"] if fl["proc"] else None
+                row["fb_rx_ingest_ms"] = fl["ingest"]["median_ms"] if fl["ingest"] else None
+            if lat:
+                LOG.info("   latency: TX buffer %.0f ms (p95 %.0f)%s", lat["median_ms"], lat["p95_ms"],
+                         "" if fbrx is None or row["fb_rx_proc_ms"] is None else
+                         f", feedback RX processing {row['fb_rx_proc_ms']:.0f} ms")
             history.append(row)
 
         LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
@@ -320,6 +351,11 @@ def main_tx(argv=None):
                 enc.start()
             if now >= next_tick:
                 next_tick += 1
+                for dev, clk in resync:
+                    try:
+                        clk.sync_device(dev.get_time_now().get_real_secs(), s.start_delay_s, time.monotonic())
+                    except Exception:          # noqa: BLE001
+                        pass
                 if gain_profile is not None and a.mode == "rf":
                     g = gain_profile(now - t_start)
                     for ch in range(tx_chans):
@@ -358,6 +394,15 @@ def main_tx(argv=None):
                                "history": enc.history}
         else:
             report["video"] = {"adaptive": False, "ts_muxrate": s.ts_muxrate, "video_bitrate": s.video_bitrate}
+        report["latency"] = {
+            "tx_video": src.latency_report(),
+            "acm_switch_to_air": _stats_ms(list(src.switch_air)) if ctl is not None else None,
+            "acm_loop": _stats_ms(list(ctl.latency)) if ctl is not None else None,
+            "feedback_rx": fbrx.latency_report() if fbrx is not None else None,
+            "clock": {"resyncs": vclock.resyncs, "max_correction_ms": round(1e3 * vclock.max_correction, 2)},
+            "sim_device_underruns": dev_sim.underruns if dev_sim is not None else None,
+            "tx_buffer_samples": s.tx_buffer_samples if a.mode == "rf" else None,
+            "sim_tx_device_samples": s.sim_tx_device_samples if a.mode == "sim" else None}
         report.update(tx=src.snapshot(), encoder_error=enc.error, video_tx_bytes=ts.stat().st_size,
                       video_tx_sha256=sha256_file(ts), video_tx_frames=ffprobe_frames(ts))
         if not enc.error and ts.stat().st_size > 0 and not stop.is_set():
@@ -444,8 +489,10 @@ def main_rx(argv=None):
             from .acm import FeedbackReporter
             from .blocks import FeedbackRadioSource
             reporter = FeedbackReporter(rx, vr, s.acm_fb_delay_s)
-            fbsrc = FeedbackRadioSource(s, reporter.packet, throttle=(a.mode == "sim"))
+            fclock = AirClock(s.fb_rate)
+            fbsrc = FeedbackRadioSource(s, reporter.packet, clock=fclock, lead_s=s.tx_lead_ms / 1e3)
             keep.append(fbsrc)
+        resync, fdev_sim = [], None
         if a.mode == "rf":
             from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
                                    validate_tx_gain)
@@ -465,6 +512,9 @@ def main_rx(argv=None):
                 tb.connect(fbsrc, (fusrp, 0))
                 keep += [usrp, fusrp, nul]
                 iq = [(usrp, 0), (nul, 0)]
+                fclock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+                fbsrc.set_max_output_buffer(s.tx_buffer_samples)
+                resync.append((fusrp, fclock))
             else:
                 usrp = make_radio(s, "rx")
                 report["hardware"] = configure_direction(usrp, s, "rx")
@@ -472,6 +522,9 @@ def main_rx(argv=None):
                 tb.connect((usrp, 1), (rx, 1))
                 keep.append(usrp)
                 iq = [(usrp, 0), (usrp, 1)]
+            rx.clock = AirClock(s.sample_rate)
+            rx.clock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+            resync.append((usrp, rx.clock))
         else:
             from gnuradio import zeromq
             srcz = zeromq.pull_source(gr.sizeof_gr_complex, 1, s.zmq_addr, 100, False, -1)
@@ -491,8 +544,12 @@ def main_rx(argv=None):
                                   "snr_db": s.sim_snr_db, "channel": s.sim_channel}
             if radio_fb:
                 fpush = zeromq.push_sink(gr.sizeof_gr_complex, 1, s.fb_zmq_addr, 100, False, -1)
-                tb.connect(fbsrc, fpush)
-                keep.append(fpush)
+                fdev_sim = TxDeviceSim(1, s.fb_rate, fclock)       # USRP emulation, as for the video TX
+                if s.sim_tx_device_samples:
+                    fbsrc.set_min_output_buffer(s.sim_tx_device_samples)
+                tb.connect(fbsrc, fdev_sim)
+                tb.connect(fdev_sim, fpush)
+                keep += [fpush, fdev_sim]
                 report["hardware"]["feedback_zmq"] = s.fb_zmq_addr
         tb.msg_connect((rx, "pdus"), (vr, "pdus"))
         if a.gui:
@@ -547,8 +604,23 @@ def main_rx(argv=None):
                     line += " | fb %d frames" % fbsrc.frames
                 if a.mode == "sim" and ch_sim is not None and ch_sim.profile is not None:
                     line += " (sim SNR %.1f)" % ch_sim.snr_now
+            for dev, clk in resync:
+                try:
+                    clk.sync_device(dev.get_time_now().get_real_secs(), s.start_delay_s, time.monotonic())
+                except Exception:          # noqa: BLE001
+                    pass
+            lat = rx.latency_tick()
+            flat = fbsrc.latency_tick() if fbsrc is not None else None
             LOG.info("%s", line)
+            if lat["proc"] or flat:
+                LOG.info("   latency: RX processing %s ms, antenna -> RX buffer %s ms, feedback TX buffer %s ms",
+                         lat["proc"]["median_ms"] if lat["proc"] else None,
+                         lat["ingest"]["median_ms"] if lat["ingest"] else None,
+                         flat["median_ms"] if flat else None)
             history.append({
+                "rx_proc_ms": lat["proc"]["median_ms"] if lat["proc"] else None,
+                "rx_ingest_ms": lat["ingest"]["median_ms"] if lat["ingest"] else None,
+                "fb_tx_buffer_ms": flat["median_ms"] if flat else None,
                 "t": round(time.monotonic() - t_start, 2), "t_wall": round(time.time(), 2), "ok": r["ok"],
                 "rs": r["rs_fail"], "sig": r["sig_fail"], "crc": r["crc_fail"], "lost": r["lost_sync"],
                 "snr_db": r["snr_db"], "evm_db": r["evm_db"], "snr_eff_db": r["snr_eff_db"],
@@ -611,6 +683,9 @@ def main_rx(argv=None):
                 if not report["fec_match"]:
                     LOG.error("FEC differs: TX %s, RX %s %s", tx_fec, s.fec, s.ldpc_rate)
         ok = v["end_received"] and v["missing_data_packets"] == 0 and info and int(info.get("nb_read_frames", 0)) > 0
+        report["latency"] = {"rx": rx.latency_report(),
+                             "feedback_tx": fbsrc.latency_report() if fbsrc is not None else None,
+                             "sim_device_underruns": fdev_sim.underruns if fdev_sim is not None else None}
         report["fec"] = {"fec": s.fec, "ldpc_rate": None if s.fec == "rs" else "5/6 punctured (ACM)" if s.acm
                          else s.ldpc_rate,
                          "frames_with_other_fec": r.get("fec_mismatch", 0)}
