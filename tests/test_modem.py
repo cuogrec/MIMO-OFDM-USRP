@@ -582,7 +582,7 @@ def test_tx_pacing_limits_buffer_delay():
         s = load_settings(None, mimo_mode="siso", sample_rate=500e3)
         clk = AirClock(s.sample_rate)
         src = MimoTxSource(s, 1, clock=clk, lead_s=lead)
-        dev = TxDeviceSim(2, s.sample_rate, clk)
+        dev = TxDeviceSim(2, s.sample_rate, clk, print_late=False, source=src)
         src.set_min_output_buffer(65536)
         tb = gr.top_block()
         sinks = [blocks.null_sink(gr.sizeof_gr_complex) for _ in range(2)]
@@ -650,6 +650,141 @@ def test_rf_fer_curve_points():
     acm = dict(rep, settings={"mimo_mode": "siso", "modulation": "qpsk", "acm": True},
                history=[dict(h, modulation="qpsk" if i < 5 else "16qam") for i, h in enumerate(hist)])
     assert [r["t"] for r in points(acm)] == [2.0, 5.0], points(acm)   # 6.0: qpsk -> 16qam; 7.0: no next second
+
+
+def _device_run(seconds, lead, resync, stall, rate=500e3):
+    """MimoTxSource -> TxDeviceSim (UHD timing rules) -> null sinks for `seconds` s; returns (src, dev)."""
+    import time
+    from gnuradio import gr, blocks
+    from ofdm321.blocks import AirClock, MimoTxSource, TxDeviceSim
+    from ofdm321.config import load_settings
+    s = load_settings(None, mimo_mode="siso", sample_rate=rate)
+    clk = AirClock(s.sample_rate)
+    src = MimoTxSource(s, 1, clock=clk, lead_s=lead, resync=resync, stall=stall)
+    dev = TxDeviceSim(2, s.sample_rate, clk, print_late=False, on_late=src.late_hint, source=src)
+    tb = gr.top_block()
+    sinks = [blocks.null_sink(gr.sizeof_gr_complex) for _ in range(2)]
+    for i in (0, 1):
+        tb.connect((src, i), (dev, i))
+        tb.connect((dev, i), sinks[i])
+    tb.start()
+    time.sleep(seconds)
+    tb.stop()
+    tb.wait()
+    return src, dev
+
+
+def test_late_packets_drop_until_eob_and_source_resyncs():
+    """RF 25/11: after a TX stall longer than the lead, gr-uhd packets are late, the radio drops everything until
+    an end of burst: "LLLL" for ever, nothing on the air. TxDeviceSim reproduces it (v0.6.1 source: almost all
+    samples after the stall dropped); the v0.6.2 source ends the burst and re-anchors at now + lead, so only
+    the stall itself is lost, and it counts late_events / reanchors."""
+    try:
+        import gnuradio  # noqa: F401
+    except ImportError:
+        print("  (no GNU Radio: skipped)")
+        return
+    out = {}
+    for resync in (False, True):
+        src, dev = _device_run(3.0, 0.03, resync, "1.5:100:120:sleep")
+        r = src.latency_report()
+        out[resync] = (dev.late_events, round(dev.dropped / max(1, src.produced), 2), r["reanchors"], r["late_events"])
+        assert dev.late_events >= 1 and r["late_events"] >= 1 and r["sim_stalls"] >= 1, (resync, out)
+    assert out[False][1] > 0.4 and out[False][2] == 0, out          # stuck: most of the stream dropped
+    assert out[True][1] < 0.15 and out[True][2] >= 1, out           # recovered after every stall
+    print("  late events / dropped share / re-anchors: v0.6.1", out[False][:3], "| v0.6.2", out[True][:3])
+
+
+def test_tx_end_watchdog():
+    """The TX always ends: deadline, or a queue that stops shrinking once the video is done."""
+    from ofdm321.runner_split import TxEndWatchdog
+    w = TxEndWatchdog(deadline=100.0, stuck_s=10.0)
+    assert w.check(50, 64, False) is None                       # video running, queue full: fine
+    assert w.check(60, 40, True) is None and w.check(65, 30, True) is None
+    assert w.check(74, 30, True) is None and "không giảm" in w.check(76, 30, True)
+    w = TxEndWatchdog(deadline=100.0)
+    assert "thời hạn" in w.check(101, 5, False)
+
+
+def test_ctrl_c_writes_tx_report():
+    """Ctrl+C (SIGINT) on the TX: report.json written with TX_ABORTED, process exits (no RX connected)."""
+    import json
+    import signal
+    import subprocess
+    import time
+    from pathlib import Path
+    try:
+        import gnuradio  # noqa: F401
+    except ImportError:
+        print("  (no GNU Radio: skipped)")
+        return
+    repo = Path(__file__).resolve().parents[1]
+    p = subprocess.Popen([sys.executable, str(repo / "OFDM_N321_TX/run_tx.py"), "--mode", "sim", "--seconds", "20",
+                          "--warmup", "1", "--zmq", "tcp://127.0.0.1:59871", "--name", "ctrlc_test"],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out = ""
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            line = p.stdout.readline()
+            out += line
+            if "TX data" in line:
+                break
+        p.send_signal(signal.SIGINT)
+        rest, _ = p.communicate(timeout=30)
+        out += rest
+    finally:
+        if p.poll() is None:
+            p.kill()
+    runs = sorted((repo / "OFDM_N321_TX/runs").glob("*_ctrlc_test/report.json"))
+    assert runs, out[-2000:]
+    rep = json.loads(runs[-1].read_text())
+    assert rep["status"] == "TX_ABORTED" and rep["abort_reason"].startswith("Ctrl+C"), (rep["status"], out[-1500:])
+    import shutil
+    for r in runs:
+        shutil.rmtree(r.parent, ignore_errors=True)
+
+
+def test_radio_feedback_survives_tx_stalls():
+    """Feedback chain in ONE process with GIL-holding stalls (20-150 ms, 1/s): the feedback receiver still decodes
+    most frames, the ACM controller climbs and never times out (RF 25/11: ACM stayed at BPSK)."""
+    import time
+    try:
+        from gnuradio import gr, blocks
+    except ImportError:
+        print("  (no GNU Radio: skipped)")
+        return
+    from ofdm321.acm import FB, FB_MAGIC, FB_PACKET_BYTES, ORDER, AcmController, RadioFeedbackHandler
+    from ofdm321.blocks import AirClock, FeedbackRadioSource, MimoRxSink, TxDeviceSim, feedback_rx_settings
+    from ofdm321.config import load_settings
+    s = load_settings(None, mimo_mode="siso", acm=True, fb_link="radio")
+    ctl = AcmController("bpsk,qpsk,16qam,64qam")
+    seq = [0]
+
+    def packet():
+        seq[0] += 1
+        raw = FB.pack(FB_MAGIC, 7, seq[0], 21.0, 0.0, 0.01, ORDER.index(ctl.modulation), 1)
+        return raw + bytes(FB_PACKET_BYTES - len(raw))
+    clk = AirClock(s.fb_rate)
+    src = FeedbackRadioSource(s, packet, clock=clk, lead_s=0.05, stall="1:20:150:gil")
+    dev = TxDeviceSim(1, s.fb_rate, clk, print_late=False, on_late=src.late_hint, source=src)
+    rx = MimoRxSink(feedback_rx_settings(s))
+    fbh = RadioFeedbackHandler(ctl, 7)
+    rx.on_packet = fbh
+    tb = gr.top_block()
+    nul = blocks.null_source(gr.sizeof_gr_complex)
+    tb.connect(src, dev)
+    tb.connect(dev, (rx, 0))
+    tb.connect(nul, (rx, 1))
+    tb.start()
+    time.sleep(4.0)
+    tb.stop()
+    tb.wait()
+    expect = 4.0 * s.fb_rate / src.mod.frame_len
+    assert fbh.used > 0.6 * expect, (fbh.used, expect, src.latency_report())
+    assert ctl.timeouts == 0 and ctl.modcods[ctl.index] != "bpsk", (ctl.timeouts, ctl.modcods[ctl.index])
+    print(f"  feedback with stalls: {fbh.used}/{expect:.0f} reports used, ACM at {ctl.modcods[ctl.index]}, "
+          f"{src.stalls} stalls, {src.late_events} late events")
 
 
 def test_ts_splice_helpers():

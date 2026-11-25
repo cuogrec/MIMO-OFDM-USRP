@@ -278,3 +278,44 @@ Mô phỏng hai tiến trình (siso + phản hồi radio, `--tx-lead-ms 30`):
 | `sine:6:30:40` | 8 / 8 | 848 / 840 | mất gói khi SNR xuống 6 dB (giới hạn vật lý của siso) |
 
 Profile `dips:BASE:DEPTH:RATE:MS` (mới) tạo các lần fade ngắn ngẫu nhiên để tái hiện hiện tượng RF trong mô phỏng.
+
+## 9. Gói trễ ("L") và tự phục hồi (v0.6.2)
+
+**Lỗi RF 25/11** (v0.6.1, `--tx-lead-ms 30`, ACM + phản hồi radio): sau khoảng 55 s, máy phát in liên tục `LLLL`,
+không còn tín hiệu lên sóng, và máy phát không tự dừng.
+
+**Cơ chế:** khối `usrp_sink` của gr-uhd gắn timestamp cho mọi gói (start + số mẫu đã gửi / Fs). Khi nguồn phát
+Python bị khựng lâu hơn lead (GIL, FFmpeg, giải phản hồi...), các gói tới thiết bị sau timestamp của chúng, tức gói
+trễ "L". Radio khi đó bỏ **mọi** gói cho tới khi nhận end-of-burst. Luồng của ta không bao giờ gửi EOB, nên kẹt
+vĩnh viễn. Lượt v0.6.0 không gặp vì bộ đệm đầy (khoảng 0,4 s) che các lần khựng.
+
+**Mô phỏng tái hiện được** (`TxDeviceSim` theo đúng luật thời gian của UHD: mẫu tới sau thời điểm phát thì bỏ, in
+"L", và bỏ tiếp tới EOB; `--sim-stall 0.5:20:150:gil` chèn các lần khựng 20–150 ms giữ GIL ở nguồn phát).
+siso + phản hồi radio, SNR theo bậc:
+
+| | v0.6.1 (`--tx-lead-ms 30 --no-tx-resync`) | v0.6.2 (mặc định, lead 50 ms) |
+|---|---|---|
+| Kết quả RX | FAIL, 0 gói DATA nhận được | SIM_RX_VERIFIED, thiếu 0 gói |
+| Mẫu bị thiết bị bỏ | 46 triệu (mọi mẫu sau lần "L" đầu tiên) | 150 nghìn (chỉ các lần khựng) |
+| ACM | đứng ở BPSK, 0 lần chuyển | 12 lần chuyển theo SNR |
+| Vòng ACM | — | 124,5 ms |
+
+**Sửa (cả nguồn video lẫn nguồn phản hồi):**
+- Khi thời điểm phát của mẫu kế tiếp đã qua, hoặc USRP báo "L" qua cổng `async_msgs` (mô phỏng: `on_late`), nguồn
+  đặt `tx_eob` để kết thúc burst, rồi `tx_sob` + `tx_time` = thời gian thiết bị hiện tại + lead để mở burst mới,
+  và dời timeline của `AirClock` theo. Không bao giờ kẹt ở trạng thái trễ.
+- Các gói của những khung bị bỏ được **phát lại** ngay sau đó (đầu hàng đợi); máy thu bỏ qua bản trùng.
+- Mỗi lần gọi `work()` chỉ sinh tối đa ¼ lead mẫu, để mẫu đầu lô không bị trễ.
+- `report.json` → `latency.tx_video` / `feedback_tx`: `late_events`, `reanchors`, `work_ms.p99`, `margin_ms`;
+  `uhd_async` (RF: số late/underflow do UHD báo). Log cảnh báo khi `work()` p99 > lead/2.
+- **Lead mặc định 50 ms.** Trên máy thu, `work()` p99 khoảng 10 ms; vòng ACM ≈ 2 × lead + khoảng 25 ms ≈ 0,12 s.
+  `--no-tx-resync` quay về v0.6.1.
+
+**Máy phát luôn kết thúc:** quá warm-up + `--seconds` + 30 s, hoặc hàng đợi không giảm trong 10 s sau khi hết
+video → gửi END, ghi `status: TX_ABORTED` + `abort_reason`, rồi thoát. Ctrl+C cũng ghi report (`abort_reason:
+Ctrl+C`); Ctrl+C lần hai thoát ngay sau khi ghi report.
+
+**Phản hồi khi CPU bận:** log máy phát cảnh báo khi số khung phản hồi giải được < 50% mức cần (khoảng 133/s).
+History có thêm `fb_rx_proc_p95_ms`, `fb_rx_work_p95_ms`, `fb_rx_cpu` (tỉ lệ thời gian `work()` của bộ thu
+phản hồi), `acm_timeouts`; report có `latency.feedback_rx.frames_per_s`. Test và mô phỏng có khựng: bộ thu phản hồi
+vẫn dùng được khoảng 80% báo cáo, ACM không timeout.

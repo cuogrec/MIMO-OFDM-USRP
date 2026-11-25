@@ -52,6 +52,7 @@ class AcmController:
         self.last_dir = 0                          # +1 last switch was up, -1 down
         self.confirmed_at = 0.0
         self.ignored_dips = 0                      # low streaks that ended before a step down (debounce)
+        self.timeouts = 0                          # feedback silent for timeout_s (-> most robust modulation)
         self.thresholds = THRESHOLDS_BY_FEC[fec]
         self.margin, self.hyst, self.hold, self.timeout = margin_db, hysteresis_db, hold_s, timeout_s
         self.index = 0
@@ -71,6 +72,7 @@ class AcmController:
     def modulation(self):
         with self.lock:
             if self.last_report is not None and time.monotonic() - self.last_report > self.timeout:
+                self.timeouts += 1
                 if self.index:
                     LOG.warning("ACM: no feedback for %.1f s -> %s", self.timeout, self.modcods[0])
                     self.index, self.switches = 0, self.switches + 1

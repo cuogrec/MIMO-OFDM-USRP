@@ -11,6 +11,8 @@ import argparse
 from datetime import datetime
 import json
 import logging
+import os
+import queue
 import secrets
 import signal
 import subprocess
@@ -21,9 +23,11 @@ import time
 from gnuradio import blocks, gr
 
 from . import __version__
-from .blocks import AirClock, MimoChannelSim, MimoRxSink, MimoTxSource, SfoResampler, TxDeviceSim, VideoReceiver
+from .blocks import (AirClock, MimoChannelSim, MimoRxSink, MimoTxSource, SfoResampler, TxDeviceSim,  # noqa: E501
+                     UhdAsyncMonitor, VideoReceiver)
 from .config import app_root, load_settings
 from .media import encoder_command, require_ffmpeg, sha256_file
+from .protocol import END, pack_packet
 from .runner import Encoder, capacity
 
 LOG = logging.getLogger("ofdm321")
@@ -53,7 +57,11 @@ def common_args(p):
     p.add_argument("--zmq", dest="zmq_addr")
     p.add_argument("--tx-lead-ms", dest="tx_lead_ms", type=float,
                    help="TX sources (video TX, radio feedback on the RX PC) build samples at most this far ahead "
-                        "of the air time (30; 0 = v0.6 behaviour: fill the USRP buffers, ~0.4 s ACM loop)")
+                        "of the air time (50; 0 = v0.6 behaviour: fill the USRP buffers, ~0.4 s ACM loop)")
+    p.add_argument("--no-tx-resync", dest="tx_resync", action="store_const", const=False,
+                   help="v0.6.1: a TX source that falls behind its air timeline stays late (UHD 'L' forever)")
+    p.add_argument("--sim-stall", dest="sim_stall",
+                   help="SIM: random stalls of the TX source RATE:MIN_MS:MAX_MS[:gil], e.g. 0.5:20:150:gil")
     p.add_argument("--sim-dev-buffer", dest="sim_tx_device_samples", type=int,
                    help="SIM: emulated USRP TX buffer in samples per stream (131072, like the RF loop delay)")
     p.add_argument("--name", default="")
@@ -62,7 +70,7 @@ def common_args(p):
 def settings_from(a, extra):
     keys = ["mimo_mode", "modulation", "sample_rate", "frequency", "device_args", "zmq_addr",
             "acm", "acm_port", "fb_link", "fb_freq", "fb_rate", "fec", "ldpc_rate", "tx_lead_ms",
-            "sim_tx_device_samples"] + extra
+            "sim_tx_device_samples", "tx_resync", "sim_stall"] + extra
     over = {k: getattr(a, k) for k in keys}
     if a.sync:
         over.update(clock_source=a.sync, time_source=a.sync)
@@ -75,6 +83,42 @@ def new_run(role, s, mode, name):
     run_dir.mkdir(parents=True)
     (app_root() / "runs/latest_run.txt").write_text(str(run_dir) + "\n")
     return run_dir
+
+
+class TxEndWatchdog:
+    """The TX must always end (RF 25/11: after late packets it ran until Ctrl+C). Abort reasons: past the
+    deadline (warm-up + --seconds + 30 s), or, once the video is done, a TX queue that has not shrunk for
+    `stuck_s` seconds."""
+
+    def __init__(self, deadline, stuck_s=10.0):
+        self.deadline, self.stuck_s = deadline, stuck_s
+        self.last_q = self.last_t = None
+
+    def check(self, now, queue, video_done):
+        if now > self.deadline:
+            return f"quá thời hạn (warm-up + --seconds + 30 s), hàng đợi còn {queue} gói"
+        if video_done and queue > 0:
+            if self.last_q is None or queue < self.last_q:
+                self.last_q, self.last_t = queue, now
+            elif now - self.last_t > self.stuck_s:
+                return f"hàng đợi phát không giảm trong {self.stuck_s:.0f} s sau khi hết video ({queue} gói)"
+        else:
+            self.last_q = self.last_t = None
+        return None
+
+
+def stop_flowgraph(tb, timeout=5.0):
+    """tb.stop() + tb.wait() in a thread; False if they did not return within `timeout` s (a block stuck)."""
+    done = threading.Event()
+
+    def run():
+        try:
+            tb.stop()
+            tb.wait()
+        finally:
+            done.set()
+    threading.Thread(target=run, daemon=True).start()
+    return done.wait(timeout)
 
 
 def run_medians(history):
@@ -183,7 +227,17 @@ def main_tx(argv=None):
     ctl = fb = fbh = fbrx = None
     radio_fb = s.acm and s.fb_link == "radio"
     stop = threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    state = {"abort": None}
+
+    def on_sigint(*_):
+        if stop.is_set():                    # second Ctrl+C: write what we have and leave now
+            report.update(status="TX_ABORTED", abort_reason=(state["abort"] or "Ctrl+C") + " (Ctrl+C lần 2)",
+                          completed=datetime.now().isoformat())
+            (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
+            os._exit(130)
+        state["abort"] = state["abort"] or "Ctrl+C"
+        stop.set()
+    signal.signal(signal.SIGINT, on_sigint)
     try:
         tb = gr.top_block("N321 MIMO TX", catch_exceptions=True)
         if s.acm:
@@ -205,9 +259,10 @@ def main_tx(argv=None):
                 LOG.info("ACM: waiting for RX feedback on UDP %d (starts with %s)", s.acm_port, ctl.modulation)
         from .blocks import AirClock, TxDeviceSim, _stats_ms
         vclock = AirClock(s.sample_rate)
-        src = MimoTxSource(s, session, acm=ctl, clock=vclock, lead_s=s.tx_lead_ms / 1e3)
+        src = MimoTxSource(s, session, acm=ctl, clock=vclock, lead_s=s.tx_lead_ms / 1e3, resync=s.tx_resync,
+                           stall=s.sim_stall if a.mode == "sim" else None)
         keep = [src]
-        dev_sim = None
+        dev_sim = uhd_mon = None
         resync = []                          # RF: (usrp, AirClock) refined once a second
         tx_chans = 2
         if a.mode == "rf":
@@ -231,7 +286,7 @@ def main_tx(argv=None):
                 tb.connect(nul_rx, (fbrx, 1))
                 keep += [usrp, fusrp, fbrx, nul_tx, nul_rx]
                 fbrx.clock = AirClock(s.fb_rate)
-                fbrx.clock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+                fbrx.clock.start(report["hardware"]["t_set_monotonic"], s.start_delay_s)
                 resync.append((fusrp, fbrx.clock))
             else:
                 usrp = make_radio(s, "tx")
@@ -239,13 +294,17 @@ def main_tx(argv=None):
                 tb.connect((src, 0), (usrp, 0))
                 tb.connect((src, 1), (usrp, 1))
                 keep.append(usrp)
-            vclock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+            vclock.start(report["hardware"]["t_set_monotonic"], s.start_delay_s)
             resync.append((usrp, vclock))
+            uhd_mon = UhdAsyncMonitor(on_late=src.late_hint)
+            tb.msg_connect((usrp, "async_msgs"), (uhd_mon, "in"))
+            keep.append(uhd_mon)
             src.set_max_output_buffer(s.tx_buffer_samples)
         else:
             from gnuradio import zeromq
             # USRP emulation: real-time output, and a buffer in front of it as large as the device's
-            dev_sim = TxDeviceSim(2, s.sample_rate, vclock)
+            dev_sim = TxDeviceSim(2, s.sample_rate, vclock, on_late=src.late_hint,
+                                  source=src)
             if s.sim_tx_device_samples:
                 src.set_min_output_buffer(s.sim_tx_device_samples)
             il = blocks.interleave(gr.sizeof_gr_complex, 1)
@@ -338,9 +397,23 @@ def main_tx(argv=None):
                              None if fr["snr_db"] is None else round(fr["snr_db"], 1))
             lat = src.latency_tick()
             row["tx_buffer_ms"] = lat["median_ms"] if lat else None
+            row["tx_late_events"], row["tx_reanchors"] = src.late_events, vclock.reanchors
+            row["tx_work_p99_ms"] = src.work_tick_stats()
+            if row["tx_work_p99_ms"] is not None and src.lead_s > 0 and row["tx_work_p99_ms"] > 500 * src.lead_s:
+                LOG.warning("work() p99 %.0f ms > lead/2 (%.0f ms): nguồn phát có thể trễ (UHD 'L'); tăng --tx-lead-ms",
+                            row["tx_work_p99_ms"], 500 * src.lead_s)
             if fbrx is not None:
                 fl = fbrx.latency_tick()
                 row["fb_rx_proc_ms"] = fl["proc"]["median_ms"] if fl["proc"] else None
+                row["fb_rx_proc_p95_ms"] = fl["proc"]["p95_ms"] if fl["proc"] else None
+                row["fb_rx_work_p95_ms"] = fl["work"]["p95_ms"] if fl["work"] else None
+                row["fb_rx_cpu"] = round(fl["work_s"], 3)          # s of work() per s: CPU/GIL share
+                row["acm_timeouts"] = ctl.timeouts
+                expect = s.fb_rate / fbrx.frame_len
+                if row.get("fb_frames_per_s") is not None and now - t_start > 5 and row["fb_frames_per_s"] < 0.5 * expect:
+                    LOG.warning("Phản hồi radio yếu: %d khung/s giải được (cần ~%.0f); xử lý %s ms (p95 %s), work %.0f%% "
+                                "thời gian -> ACM có thể không nhận được báo cáo", row["fb_frames_per_s"], expect,
+                                row["fb_rx_proc_ms"], row["fb_rx_proc_p95_ms"], 100 * row["fb_rx_cpu"])
                 row["fb_rx_ingest_ms"] = fl["ingest"]["median_ms"] if fl["ingest"] else None
             if lat:
                 LOG.info("   latency: TX buffer %.0f ms (p95 %.0f)%s", lat["median_ms"], lat["p95_ms"],
@@ -351,9 +424,14 @@ def main_tx(argv=None):
         LOG.info("TX running: %0.f s IDLE so the RX can lock, then video", a.warmup)
         enc = None
         next_tick = t_start + 1
+        watchdog_end = TxEndWatchdog(t_start + a.warmup + a.seconds + 30)
         while not stop.is_set() and not (enc is not None and enc.done.is_set()):
             time.sleep(0.2)
             now = time.monotonic()
+            why = watchdog_end.check(now, src.snapshot()["tx_queue"], False)
+            if why:
+                state["abort"] = why
+                break
             if enc is None and now - t_start >= a.warmup:
                 enc = make_encoder()
                 enc.start()
@@ -361,7 +439,7 @@ def main_tx(argv=None):
                 next_tick += 1
                 for dev, clk in resync:
                     try:
-                        clk.sync_device(dev.get_time_now().get_real_secs(), s.start_delay_s, time.monotonic())
+                        clk.sync_device(dev.get_time_now().get_real_secs(), time.monotonic())
                     except Exception:          # noqa: BLE001
                         pass
                 if gain_profile is not None and a.mode == "rf":
@@ -370,22 +448,44 @@ def main_tx(argv=None):
                         usrp.set_gain(g, ch)
                     LOG.info("TX gain %.1f dB (profile)", g)
                 tick(now, enc)
-        if enc is None:                      # stopped during the warm-up: keep the report complete
-            enc = make_encoder()
+        if enc is None and state["abort"] is None and not stop.is_set():
+            enc = make_encoder()             # (cannot happen: the loop starts it after the warm-up)
             enc.start()
             enc.done.wait(15)
-        while not stop.is_set() and src.snapshot()["tx_queue"] > 0:
+        while state["abort"] is None and not stop.is_set() and src.snapshot()["tx_queue"] > 0:
             time.sleep(0.2)
-        time.sleep(2)                        # trailing IDLE: RX closes the last group
-        tb.stop()
-        tb.wait()
+            why = watchdog_end.check(time.monotonic(), src.snapshot()["tx_queue"], True)
+            if why:
+                state["abort"] = why
+        if state["abort"] is not None:
+            LOG.error("TX dừng: %s", state["abort"])
+            if state["abort"] != "Ctrl+C" and enc is not None:
+                # END packets so the RX closes the session; the queue content is given up
+                with src.packets.mutex:
+                    src.packets.queue.clear()
+                for _ in range(12):
+                    try:
+                        src.packets.put_nowait(pack_packet(END, session, enc.count))
+                    except queue.Full:
+                        break
+                time.sleep(1.0)
+            report.update(status="TX_ABORTED", abort_reason=state["abort"])
+            (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
+        else:
+            time.sleep(2)                    # trailing IDLE: RX closes the last group
+        if not stop_flowgraph(tb):
+            LOG.error("flowgraph không dừng trong 5 s (khối bị kẹt): ghi report và thoát")
+            report.update(status="TX_ABORTED", abort_reason=(state["abort"] or "") + "; flowgraph kẹt khi dừng",
+                          completed=datetime.now().isoformat(), tx=src.snapshot(), latency={"tx_video": src.latency_report()})
+            (run_dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
+            os._exit(3)
         ts = run_dir / "video_tx.ts"
         if ctl is not None:
             if fb is not None:
                 fb.close()
             lat = sorted(ctl.latency)
             report["acm"] = {"switches": ctl.switches, "reports": ctl.reports, "frames": src.snapshot()["acm_frames"],
-                             "debounce": s.acm_debounce, "ignored_dips": ctl.ignored_dips,
+                             "debounce": s.acm_debounce, "ignored_dips": ctl.ignored_dips, "timeouts": ctl.timeouts,
                              "loop_latency_s_median": lat[len(lat) // 2] if lat else None,
                              "history": list(ctl.history), "fb_link": s.fb_link}
             if fbh is not None:
@@ -407,14 +507,21 @@ def main_tx(argv=None):
             "tx_video": src.latency_report(),
             "acm_switch_to_air": _stats_ms(list(src.switch_air)) if ctl is not None else None,
             "acm_loop": _stats_ms(list(ctl.latency)) if ctl is not None else None,
-            "feedback_rx": fbrx.latency_report() if fbrx is not None else None,
+            "feedback_rx": dict(fbrx.latency_report(), frames_per_s={
+                "min": min(fps), "median": sorted(fps)[len(fps) // 2], "expected": round(s.fb_rate / fbrx.frame_len)}
+                if (fps := [r["fb_frames_per_s"] for r in history[5:] if r.get("fb_frames_per_s") is not None])
+                else None) if fbrx is not None else None,
             "clock": {"resyncs": vclock.resyncs, "max_correction_ms": round(1e3 * vclock.max_correction, 2)},
-            "sim_device_underruns": dev_sim.underruns if dev_sim is not None else None,
+            "uhd_async": dict(uhd_mon.counts) if uhd_mon is not None else None,
+            "sim_device_late": dev_sim.late_events if dev_sim is not None else None,
+            "sim_device_dropped": dev_sim.dropped if dev_sim is not None else None,
             "tx_buffer_samples": s.tx_buffer_samples if a.mode == "rf" else None,
             "sim_tx_device_samples": s.sim_tx_device_samples if a.mode == "sim" else None}
         report.update(tx=src.snapshot(), encoder_error=enc.error, video_tx_bytes=ts.stat().st_size,
                       video_tx_sha256=sha256_file(ts), video_tx_frames=ffprobe_frames(ts))
-        if not enc.error and ts.stat().st_size > 0 and not stop.is_set():
+        if state["abort"] is not None:
+            report.update(status="TX_ABORTED", abort_reason=state["abort"])
+        elif enc is not None and not enc.error and ts.stat().st_size > 0 and not stop.is_set():
             report["status"] = "TX_COMPLETE"
     except Exception as exc:          # noqa: BLE001
         report["error"] = str(exc)
@@ -499,9 +606,10 @@ def main_rx(argv=None):
             from .blocks import FeedbackRadioSource
             reporter = FeedbackReporter(rx, vr, s.acm_fb_delay_s)
             fclock = AirClock(s.fb_rate)
-            fbsrc = FeedbackRadioSource(s, reporter.packet, clock=fclock, lead_s=s.tx_lead_ms / 1e3)
+            fbsrc = FeedbackRadioSource(s, reporter.packet, clock=fclock, lead_s=s.tx_lead_ms / 1e3,
+                                        resync=s.tx_resync, stall=s.sim_stall if a.mode == "sim" else None)
             keep.append(fbsrc)
-        resync, fdev_sim = [], None
+        resync, fdev_sim, fb_mon = [], None, None
         if a.mode == "rf":
             from .hardware import (configure_direction, configure_streams, make_radio, make_stream,
                                    validate_tx_gain)
@@ -521,7 +629,10 @@ def main_rx(argv=None):
                 tb.connect(fbsrc, (fusrp, 0))
                 keep += [usrp, fusrp, nul]
                 iq = [(usrp, 0), (nul, 0)]
-                fclock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+                fclock.start(report["hardware"]["t_set_monotonic"], s.start_delay_s)
+                fb_mon = UhdAsyncMonitor(on_late=fbsrc.late_hint)
+                tb.msg_connect((fusrp, "async_msgs"), (fb_mon, "in"))
+                keep.append(fb_mon)
                 fbsrc.set_max_output_buffer(s.tx_buffer_samples)
                 resync.append((fusrp, fclock))
             else:
@@ -532,7 +643,7 @@ def main_rx(argv=None):
                 keep.append(usrp)
                 iq = [(usrp, 0), (usrp, 1)]
             rx.clock = AirClock(s.sample_rate)
-            rx.clock.start(report["hardware"]["t_set_monotonic"] + s.start_delay_s)
+            rx.clock.start(report["hardware"]["t_set_monotonic"], s.start_delay_s)
             resync.append((usrp, rx.clock))
         else:
             from gnuradio import zeromq
@@ -553,7 +664,8 @@ def main_rx(argv=None):
                                   "snr_db": s.sim_snr_db, "channel": s.sim_channel}
             if radio_fb:
                 fpush = zeromq.push_sink(gr.sizeof_gr_complex, 1, s.fb_zmq_addr, 100, False, -1)
-                fdev_sim = TxDeviceSim(1, s.fb_rate, fclock)       # USRP emulation, as for the video TX
+                fdev_sim = TxDeviceSim(1, s.fb_rate, fclock,        # USRP emulation, as for the video TX
+                                       on_late=fbsrc.late_hint, source=fbsrc)
                 if s.sim_tx_device_samples:
                     fbsrc.set_min_output_buffer(s.sim_tx_device_samples)
                 tb.connect(fbsrc, fdev_sim)
@@ -615,7 +727,7 @@ def main_rx(argv=None):
                     line += " (sim SNR %.1f)" % ch_sim.snr_now
             for dev, clk in resync:
                 try:
-                    clk.sync_device(dev.get_time_now().get_real_secs(), s.start_delay_s, time.monotonic())
+                    clk.sync_device(dev.get_time_now().get_real_secs(), time.monotonic())
                 except Exception:          # noqa: BLE001
                     pass
             lat = rx.latency_tick()
@@ -697,7 +809,9 @@ def main_rx(argv=None):
         ok = v["end_received"] and v["missing_data_packets"] == 0 and info and int(info.get("nb_read_frames", 0)) > 0
         report["latency"] = {"rx": rx.latency_report(),
                              "feedback_tx": fbsrc.latency_report() if fbsrc is not None else None,
-                             "sim_device_underruns": fdev_sim.underruns if fdev_sim is not None else None}
+                             "uhd_async_feedback": dict(fb_mon.counts) if fb_mon is not None else None,
+                             "sim_device_late": fdev_sim.late_events if fdev_sim is not None else None,
+                             "sim_device_dropped": fdev_sim.dropped if fdev_sim is not None else None}
         report["fec"] = {"fec": s.fec, "ldpc_rate": None if s.fec == "rs" else "5/6 punctured (ACM)" if s.acm
                          else s.ldpc_rate,
                          "frames_with_other_fec": r.get("fec_mismatch", 0)}

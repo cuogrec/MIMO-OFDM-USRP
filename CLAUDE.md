@@ -1,7 +1,7 @@
 # CLAUDE.md — MIMO-OFDM-USRP
 
 Real-time video over an OFDM link (2x2 MIMO or SISO) between two USRP N321, written in
-Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.1.
+Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.2.
 
 **Reply to the user in Vietnamese.** Short, concrete answers; give exact commands to run.
 
@@ -81,16 +81,22 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 - `config.py` — `Settings` dataclass + `config/default.json`; every CLI option maps to a field.
 - `rxgui.py` — `--gui`: constellation + 2-channel spectrum + status line.
 - TX latency (v0.6.1): `blocks.AirClock` maps sample index -> air time (USRP timed start + get_time_now()),
-  `TxPacing` keeps both TX sources <= `--tx-lead-ms` (30) ahead of the air; `TxDeviceSim` + a GNU Radio buffer of
+  `TxPacing` keeps both TX sources <= `--tx-lead-ms` (50 since v0.6.2) ahead of the air; `TxDeviceSim` + a GNU Radio buffer of
   `--sim-dev-buffer` (131072) samples emulates the USRP TX buffer in sim. `report.json` -> `latency` (TX buffer,
   switch->air, RX processing/ingest, feedback TX buffer, ACM loop). `--tx-lead-ms 0` = v0.6.0 behaviour.
+  v0.6.2: lead default 50 ms; a late source (next sample past its air time, or UHD async "L" via
+  `UhdAsyncMonitor`) ends the burst (tx_eob) and starts a new one (tx_sob + tx_time = now + lead) and resends
+  the packets of the dropped frames (`--no-tx-resync` = v0.6.1). `TxDeviceSim` follows UHD timing rules (late ->
+  "L", drop until EOB, real-time air output); `--sim-stall RATE:MIN_MS:MAX_MS[:gil]` injects source stalls.
+  The TX always ends (`TxEndWatchdog`: deadline warm-up + seconds + 30 s, queue stuck 10 s -> END, TX_ABORTED);
+  Ctrl+C writes the report.
 - `runner_split.py` — TX/RX programs, write `runs/<stamp>_<tx|rx>_<rf|sim>_<mimo>_<mod>/report.json`
   (v0.5: per-second `history`, TX `video` section, `clock` reference). `tools/plot_run.py` plots TX and/or RX reports.
 
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 31 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 35 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -127,7 +133,7 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-23, v0.6.1)
+## Status (2026-11-25, v0.6.2)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
   EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
@@ -176,6 +182,13 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   buffer 267 ms); `--tx-lead-ms 30` (default) -> 78 ms (buffers 25 + 24 ms). Not yet verified on RF.
 - v0.6.1 ACM debounce: test replay of 18.5 dB + 14.3 dB dips: 41 -> 0 switches; sim `--snr-profile
   dips:19:9:0.8:15`: 33 -> 1 switches, 0 lost both, DATA 4672 -> 7987 (video stays at the QPSK rate).
+- 2026-11-25 RF (v0.6.1, lead 30, ACM + radio feedback, run OFDM_N321_RX/runs/20261125_175635_rx_rf_siso_qpsk):
+  after ~55 s TX printed "LLLL", nothing on air, TX did not stop; ACM stayed at BPSK although the RX reported
+  SNR_eff 21 dB. Cause: gr-uhd stamps every packet; a stall > lead makes packets late and the radio drops all
+  until an EOB (never sent). Reproduced in sim (TxDeviceSim with UHD rules + --sim-stall 0.5:20:150:gil: FAIL,
+  0 DATA, ACM 0 switches); v0.6.2 fix: SIM_RX_VERIFIED, 0 missing, loop 124.5 ms, ACM normal. Why the TX ACM got no
+  usable feedback from the very start of that run is not proven (no TX report); the new fb_rx_* history fields
+  and the "Phản hồi radio yếu" warning will show it on the next RF run.
 
 ## Next steps (agreed direction)
 

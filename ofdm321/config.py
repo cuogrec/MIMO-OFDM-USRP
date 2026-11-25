@@ -39,6 +39,17 @@ MODULATIONS = {"bpsk": 1, "qpsk": 2, "16qam": 4, "64qam": 6}
 MASTER_CLOCK_RATES = (200e6, 245.76e6, 250e6)
 
 
+def parse_stall(text):
+    """'' -> None, else (rate per s, min s, max s, gil): simulated stalls of a TX source, e.g. 0.5:20:150:gil
+    (gil: the stall holds the GIL, so every thread of the process stops, like FFmpeg/numpy hogs; else sleep)."""
+    if not text:
+        return None
+    p = str(text).split(":")
+    if len(p) not in (3, 4) or (len(p) == 4 and p[3] not in ("gil", "sleep")):
+        raise ValueError("sim_stall: RATE:MIN_MS:MAX_MS[:gil|sleep], e.g. 0.5:20:150:gil")
+    return float(p[0]), float(p[1]) / 1e3, float(p[2]) / 1e3, len(p) == 4 and p[3] == "gil"
+
+
 @dataclass
 class Settings:
     # --- PHY -------------------------------------------------------------
@@ -100,9 +111,11 @@ class Settings:
     fec_mode: str = "rs8_8"
     queue_packets: int = 64
     # --- TX latency (v0.6.1) ---------------------------------------------
-    tx_lead_ms: float = 30.0         # TX sources build samples at most this far ahead of their air time (0 = v0.6:
+    tx_lead_ms: float = 50.0         # TX sources build samples at most this far ahead of their air time (0 = v0.6:
                                      # as far as the GNU Radio + USRP buffers accept, ~0.13 s video + 0.26 s feedback)
     tx_buffer_samples: int = 8192    # RF: GNU Radio max output buffer of the TX sources (items)
+    tx_resync: bool = True           # v0.6.2: a late TX source starts a new burst (tx_eob, tx_sob + tx_time) at now + lead
+    sim_stall: str = ""              # sim: random TX source stalls RATE:MIN_MS:MAX_MS[:gil] (blocks.parse_stall)
     sim_tx_device_samples: int = 131072   # sim: emulated USRP TX buffer per stream (reproduces the RF delay)
     udp_port: int = 5002
     # --- simulation channel ---------------------------------------------
@@ -160,6 +173,7 @@ class Settings:
             raise ValueError("fec must be rs or ldpc, ldpc_rate 1/2, 2/3, 3/4 or 5/6")
         if not 1 <= self.ldpc_iter <= 100:
             raise ValueError("ldpc_iter must be 1..100")
+        parse_stall(self.sim_stall)
         if not 0 <= self.tx_lead_ms <= 1000 or not 1024 <= self.tx_buffer_samples <= 1 << 22 \
                 or not 0 <= self.sim_tx_device_samples <= 1 << 23:
             raise ValueError("tx_lead_ms 0..1000, tx_buffer_samples 1024..4M, sim_tx_device_samples 0..8M")
