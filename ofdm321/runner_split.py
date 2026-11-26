@@ -553,6 +553,12 @@ def main_rx(argv=None):
     p.add_argument("--cfo", dest="sim_cfo_hz", type=float)
     p.add_argument("--sfo", dest="sim_sfo_ppm", type=float)
     p.add_argument("--channel", dest="sim_channel", choices=("identity", "rayleigh", "fixed"))
+    p.add_argument("--sim-interf", dest="sim_interf",
+                   help="SIM: interference at the RX, e.g. comb:75e3:-15:11:3 (lines every 75 kHz, -15 dB, pairs of "
+                        "bursts every 11 s, 3 s apart), tone:FREQ:DB, burst:DB:DUR:PERIOD (comma separated)")
+    p.add_argument("--sim-cond", dest="sim_cond_db", type=float, help="SIM: 2x2 channel condition number in dB")
+    p.add_argument("--no-interf-mitigation", dest="rx_interf_mitigation", action="store_const", const=False,
+                   help="v0.6.2 receiver: one noise level per frame, no LTF check of the detections")
     p.add_argument("--snr-profile", dest="sim_snr_profile",
                    help="SIM: time-varying SNR, e.g. sine:6:30:40 or steps:28,18,8,14:10")
     p.add_argument("--acm-host", dest="acm_host", help="ACM: IP of the TX PC (default 127.0.0.1)")
@@ -578,7 +584,8 @@ def main_rx(argv=None):
         a.fine_timing = a.sig_recover = None
     s = settings_from(a, ["sync_threshold", "fine_timing", "sig_recover",
                           "rx_gain", "sim_snr_db", "sim_cfo_hz", "sim_sfo_ppm", "sim_channel", "soft_decoding",
-                                "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s",
+                                "const_every", "sim_snr_profile", "acm_host", "acm_fb_delay_s", "sim_interf", "sim_cond_db",
+                                "rx_interf_mitigation",
                                 "fb_tx_gain", "sim_fb_snr_db", "rx_reorder_s"])
     run_dir = new_run("rx", s, a.mode, a.name)
     report = {"version": __version__, "role": "rx", "mode": a.mode, "settings": s.to_dict(),

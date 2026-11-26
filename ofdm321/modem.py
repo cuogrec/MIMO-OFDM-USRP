@@ -480,7 +480,8 @@ class Demodulator:
     """Stateless per-frame demodulation given the frame start index."""
 
     def __init__(self, mode, modulation, threshold=0.35, backoff=3, soft=True, soft_cpu=0.3, acm=False,
-                 fine_timing=True, sig_recover=True, fec="rs", ldpc_rate=DEFAULT_LDPC_RATE, ldpc_iter=20):
+                 fine_timing=True, sig_recover=True, fec="rs", ldpc_rate=DEFAULT_LDPC_RATE, ldpc_iter=20,
+                 interf_mitigation=True, ltf_confirm=0.25, gap=80):
         if fec not in FECS or ldpc_rate not in LDPC_RATES:
             raise ValueError(f"fec must be one of {FECS}, ldpc_rate one of {LDPC_RATES}")
         self.mode, self.modulation = mode, modulation
@@ -489,6 +490,26 @@ class Demodulator:
         self.fec_flag = FEC_FLAG if self.coder else 0
         self.fec_mismatch = 0             # frames with a valid SIG of the other inner code / LDPC rate
         self.fine_timing, self.sig_recover = fine_timing, sig_recover
+        # v0.6.3: per-carrier / per-symbol noise -> soft weights (narrowband and impulse interference), and the
+        # LTF check of every Schmidl-Cox candidate (periodic interference triggers false detections)
+        self.interf_mitigation = interf_mitigation
+        self.gap_len = gap                    # frame gap (zeros) after every frame: noise-only window
+        self.ltf_confirm = ltf_confirm if fine_timing else None
+        self.false_detections = 0
+        self.gap_ewma = None                  # (64,) noise + interference power per FFT bin, frame gaps
+        self.interf_hits = np.zeros(N_FFT)    # frames in which each bin was flagged as interfered
+        self.interf_frames = 0
+        self.erased_symbols = 0
+        self.flagged_carriers = 0
+        self.nbi_attempts = self.nbi_rescued = 0
+        self.nbi_freqs = None                 # cached tone frequencies (cycles/sample, before CFO correction)
+        self.nbi_cpu, self.nbi_budget, self.nbi_clock = 0.3, 0.5, time.monotonic()
+        self.nbi_searches = self.nbi_cached = self.nbi_skipped = 0
+        self.nbi_proactive = self.nbi_quiet = self.nbi_rejected = 0
+        self._refresh_skip = self.nbi_stale = 0
+        self.nbi_research = False
+        self.noise_med = None                 # noise floor: low envelope of the per-frame estimates (freq. units)
+        self._pass, self._nbi_lines = None, 0
         self.acm = acm
         self.soft = soft
         self.soft_cpu = soft_cpu          # max share of wall time spent in erasure trials
@@ -537,27 +558,36 @@ class Demodulator:
         by cross-correlation with the known LTF (both LTF symbols, both TX antennas)."""
         x = x[:self.n_rx] if self.fine_timing else x
         M, P = self.schmidl_cox(x)
-        mask = M[start:stop] > self.threshold
-        if mask.size and mask[0]:
-            # plateau already running at the window edge: its start is unknown, skip it
-            first_low = np.flatnonzero(~mask)
-            if first_low.size == 0:
+        lim = M.size if stop is None else min(stop, M.size)
+        for _ in range(8):                         # a few candidates: false ones are skipped (LTF check)
+            mask = M[start:lim] > self.threshold
+            if mask.size and mask[0]:
+                # plateau already running at the window edge: its start is unknown, skip it
+                first_low = np.flatnonzero(~mask)
+                if first_low.size == 0:
+                    return None, None
+                mask[:first_low[0]] = False
+            above = np.flatnonzero(mask)
+            if above.size == 0:
                 return None, None
-            mask[:first_low[0]] = False
-        above = np.flatnonzero(mask)
-        if above.size == 0:
-            return None, None
-        d0 = start + above[0]
-        if d0 < N_CP // 2:
-            return None, None
-        seg = M[d0:d0 + 2 * SYM]
-        peak = seg.max()
-        plateau = np.flatnonzero(seg >= 0.9 * peak)
-        centre = d0 + int(round(plateau.mean()))
-        s0 = centre - N_CP // 2
-        if self.fine_timing:
-            s0 = self._ltf_timing(x, s0, P[centre])
-        return s0, P[centre]
+            d0 = start + above[0]
+            if d0 < N_CP // 2:
+                return None, None
+            seg = M[d0:d0 + 2 * SYM]
+            peak = seg.max()
+            plateau = np.flatnonzero(seg >= 0.9 * peak)
+            centre = d0 + int(round(plateau.mean()))
+            s0 = centre - N_CP // 2
+            if not self.fine_timing:
+                return s0, P[centre]
+            s0, score = self._ltf_timing(x, s0, P[centre])
+            if score is None or self.ltf_confirm is None or score >= self.ltf_confirm:
+                return s0, P[centre]
+            self.false_detections += 1             # periodic interference, not our preamble
+            start = d0 + 2 * SYM
+            if start >= lim:
+                return None, None
+        return None, None
 
     FINE_RANGE = 24                       # +- samples searched around the coarse start
 
@@ -571,7 +601,7 @@ class Demodulator:
         base = s0 + SYM + N_CP                     # coarse first body sample of LTF 1
         lo, hi = base - R, base + R + SYM + N_FFT
         if lo < 0 or hi > n:
-            return s0
+            return s0, None
         cfo = np.angle(p) / (2 * np.pi * (N_FFT // 2))
         seg = x[:, lo:hi] * np.exp(-2j * np.pi * cfo * np.arange(lo, hi))
         idx = np.arange(2 * R + 1)[:, None] + np.arange(N_FFT)[None, :]
@@ -579,9 +609,12 @@ class Demodulator:
         ref = np.conj(_ltf_body())
         m = np.sum(np.abs((w1 + w2) @ ref) ** 2 + np.abs((w1 - w2) @ ref) ** 2, axis=0)
         k = int(np.argmax(m))
+        # normalised score (Cauchy-Schwarz: <= 1): ~1 for our LTF, ~1/64 for noise or unrelated signals
+        e = np.sum(np.abs(w1[:, k] + w2[:, k]) ** 2 + np.abs(w1[:, k] - w2[:, k]) ** 2) * np.sum(np.abs(ref) ** 2)
+        score = float(m[k] / (e + 1e-30))
         early = np.flatnonzero(m[max(0, k - 8):k + 1] >= 0.3 * m[k])
         k = max(0, k - 8) + int(early[0])
-        return max(0, s0 + k - R)
+        return max(0, s0 + k - R), score
 
     # -- frames (batched: K frames per call amortises numpy overhead) ---
     def demodulate(self, x, s0, p_metric=None):
@@ -589,6 +622,309 @@ class Demodulator:
 
     def demodulate_batch(self, x, starts, p_metrics, known_sig=None):
         """x: (2, n); starts: frame (STF CP) indices. Returns [(packet|None, info)].
+
+        With interf_mitigation, a frame that fails is tried once more after narrowband interference
+        cancellation (_nbi_clean: tones estimated from the decision-directed residual and subtracted)."""
+        self._proactive_done = set()
+        if self.interf_mitigation and known_sig is None and self.nbi_freqs is not None:
+            x, starts = self._proactive_nbi(x, starts, p_metrics)
+        results = self._demodulate_once(x, starts, p_metrics, known_sig)
+        if not self.interf_mitigation or known_sig is not None:
+            return results
+        ps = self._pass
+        hits = getattr(self, "_hit_carriers", None)
+        for k, (pk, info) in enumerate(results):
+            if not self._failed(pk, info):
+                continue
+            if hits is None or len(hits) != len(results) or hits[k] < 2:
+                continue                            # no narrowband signature: not a case for the canceller
+            if self.nbi_freqs is not None and not self.nbi_research:   # lines known and they explain the gaps:
+                self._refresh_skip += 1             # the proactive step uses them; search again now and then
+                if self._refresh_skip % 50:
+                    continue
+            now = time.monotonic()                  # CPU budget of the rescue passes (real time)
+            self.nbi_budget = min(0.5, self.nbi_budget + (now - self.nbi_clock) * self.nbi_cpu)
+            self.nbi_clock = now
+            if self.nbi_budget <= 0:
+                self.nbi_skipped += 1
+                continue
+            t_nbi = time.perf_counter()
+            xs, s_k, kk, best, psk = x, starts[k], k, (pk, info), ps
+            self.nbi_attempts += 1
+            for _ in range(self.NBI_PASSES):        # better decisions -> better tone estimates -> ...
+                x2 = self._nbi_clean(xs, s_k, kk, psk, base=x[:, starts[k]:], first=xs is x)
+                if x2 is None:
+                    break
+                (pk2, info2), = self._demodulate_once(x2, [0], [p_metrics[k]])
+                psk, xs, s_k, kk = self._pass, x2, 0, 0
+                if self._score(pk2, info2) > self._score(*best):
+                    info2["nbi_lines"] = self._nbi_lines
+                    best = (pk2, info2)
+                if not self._failed(pk2, info2):
+                    break
+            if best[0] is not pk or best[1] is not info:
+                results[k] = best
+                self.nbi_rescued += 1
+            self.nbi_budget -= time.perf_counter() - t_nbi
+        return results
+
+    def _proactive_nbi(self, x, starts, p_metrics):
+        """With cached tone frequencies (an interference burst seen recently), cancel the tones in every frame
+        before the first pass: amplitudes from the frame gaps before and after the frame only (no decisions
+        needed; the frequencies are known, so the two gaps suffice), subtracted over the frame and its gap.
+        Works on the raw samples (the tones do not depend on our CFO), with matrices shared by all frames:
+        one least-squares projection and one synthesis per frame (batched). Returns (cleaned copy of the
+        needed part of x, starts relative to it)."""
+        g = self.gap_len - 8
+        lo = max(0, min(starts) - g)
+        hi = min(x.shape[1], max(starts) + self.body_len + self.gap_len + 16)   # (+16: _nbi_clean window)
+        xc = x[:, lo:hi].copy()
+        m = self._nbi_mats()
+        ok = [k for k, s0 in enumerate(starts) if s0 - g >= 0 and s0 + m["pos"][-1] < x.shape[1]]
+        if not ok:
+            return xc, [s0 - lo for s0 in starts]
+        idx = np.array([starts[k] for k in ok])[:, None] + m["pos"][None, :]         # (F, P)
+        gs = x[:self.n_rx][:, idx]                                                     # (nrx, F, P)
+        A = np.einsum("lp,rfp->rfl", m["pinv"], gs)                                    # (nrx, F, L)
+        fit = np.einsum("pl,rfl->rfp", m["E"], A)
+        e0 = np.sum(np.abs(gs) ** 2, axis=(0, 2))
+        e1 = np.sum(np.abs(gs - fit) ** 2, axis=(0, 2))
+        floor = (self.noise_med or 0.0) / POWER_NORM ** 2 * gs.shape[0] * gs.shape[2]   # noise energy expected
+        applied = 0
+        self._proactive_done = set()
+        good = (e1 <= 0.25 * e0) & (e0 >= 4 * floor)
+        # frequency tracking: the fitted amplitude of a line advances, from one frame to the next, by
+        # 2 pi f (start difference); the residual phase step gives the frequency error (|err| < Fs / 2 frame)
+        gj = np.flatnonzero(good)
+        if gj.size >= 2:
+            st = np.array([starts[k] for k in ok])
+            Agr = A[:, gj, :]                                                       # (nrx, G, L)
+            r_ = np.argmax(np.sum(np.abs(Agr) ** 2, axis=1), axis=0)              # strongest antenna per line
+            Ag = Agr[r_, :, np.arange(Agr.shape[2])].T                              # (G, L)
+            d = np.diff(st[gj]).astype(float)                                        # (G-1,)
+            z = Ag[1:] * np.conj(Ag[:-1]) * np.exp(-2j * np.pi * np.outer(d, self.nbi_freqs))
+            zs = z.sum(axis=0)
+            df = np.angle(zs) / (2 * np.pi * d.mean())
+            strong = np.abs(zs) > 0.5 * np.sum(np.abs(z), axis=0)                  # consistent phase steps
+            self.nbi_freqs = self.nbi_freqs + np.where(strong, 0.7 * df, 0.0)
+        for j, k in enumerate(ok):
+            if not good[j]:                             # tones explain < 6 dB, or gaps at the noise floor
+                continue
+            self._proactive_done.add(k)
+            a = starts[k] - lo
+            xc[:self.n_rx, a:a + m["n"]] -= A[:, j] @ m["S"].T
+            applied += 1
+        self.nbi_proactive += applied
+        loud = int(np.sum(e0 >= 4 * floor))
+        if loud >= 1 and applied < 0.5 * loud:          # interference in the gaps the cached lines do not explain:
+            self.nbi_research = True                    # search again on the next failure (the set stays until
+            self.nbi_stale += 1                         # a better one is found: periodic emitters come back)
+        self.nbi_quiet = 0 if applied else self.nbi_quiet + len(starts)
+        if self.nbi_quiet > 200000:                     # nothing for minutes: forget the lines
+            self.nbi_freqs, self.nbi_quiet = None, 0
+        return xc, [s0 - lo for s0 in starts]
+
+    def _nbi_mats(self):
+        """Matrices of the cached tone set (rebuilt when it changes): gap positions, their exponentials and
+        pseudo-inverse, and the synthesis over a frame + its gap."""
+        key = None if self.nbi_freqs is None else self.nbi_freqs.tobytes()
+        if getattr(self, "_nbi_key", None) != key:
+            g = self.gap_len - 8
+            pos = np.concatenate([np.arange(-g, 0), np.arange(self.body_len + 8, self.body_len + self.gap_len)])
+            E = np.exp(2j * np.pi * np.outer(pos, self.nbi_freqs))
+            n = self.body_len + self.gap_len
+            self._nbi_m = {"pos": pos, "E": E, "pinv": np.linalg.pinv(E), "n": n,
+                           "S": np.exp(2j * np.pi * np.outer(np.arange(n), self.nbi_freqs))}
+            self._nbi_key = key
+        return self._nbi_m
+
+    @staticmethod
+    def _failed(pk, info):
+        if "reasons" in info:
+            return any(r != "ok" for r in info["reasons"])
+        return pk is None
+
+    @staticmethod
+    def _score(pk, info):
+        if "reasons" in info:
+            return sum(r == "ok" for r in info["reasons"])
+        return 0 if pk is None else 1
+
+    NBI_MAX_LINES = 16
+    NBI_DB = 12.0                          # a residual spectral line this much above the median: a tone
+
+    def _find_tones(self, r, pos, span):
+        """Tones in the residual r (nrx, P) sampled at positions pos (< span): CLEAN with several peaks per round
+        (local maxima of the zero-filled spectrum > NBI_DB over its median, parabolic refinement, joint
+        least-squares fit, repeat on the residual), then one refinement sweep of every frequency on a fine grid
+        with the other lines removed. Returns (frequencies cycles/sample, amplitudes (L, nrx)) or (None, None)."""
+        nfft = 1 << int(np.ceil(np.log2(16 * span)))
+        sep = 2.5 * nfft / span                       # bins: lines closer than 2.5 / span are one line
+        lines, resid = [], r
+        for _ in range(4):
+            z = np.zeros((r.shape[0], span), complex)
+            z[:, pos] = resid
+            S = np.sum(np.abs(np.fft.fft(z, nfft, axis=-1)) ** 2, axis=0)
+            thr = 10 ** (self.NBI_DB / 10) * np.median(S)
+            loc = np.flatnonzero((S > thr) & (S >= np.roll(S, 1)) & (S >= np.roll(S, -1)))
+            new = []
+            for i in loc[np.argsort(S[loc])[::-1]]:
+                if len(lines) + len(new) >= self.NBI_MAX_LINES:
+                    break
+                fi = i / nfft
+                if any(abs(((fi - f) + 0.5) % 1.0 - 0.5) * nfft < sep for f in lines + [n_[1] for n_ in new]):
+                    continue
+                a, b, c3 = S[(i - 1) % nfft], S[i], S[(i + 1) % nfft]
+                den = a - 2 * b + c3
+                new.append((i, ((i + (0.5 * (a - c3) / den if den else 0.0)) / nfft + 0.5) % 1.0 - 0.5))
+            if not new:
+                break
+            lines += [f for _, f in new]
+            E = np.exp(2j * np.pi * np.outer(pos, lines))
+            A, *_ = np.linalg.lstsq(E, r.T, rcond=None)
+            resid = r - (E @ A).T
+        if not lines:
+            return None, None
+        lines = np.array(lines)
+        grid = np.linspace(-0.5, 0.5, 21) / span
+        for i in range(len(lines)):
+            others = np.delete(np.arange(len(lines)), i)
+            Eo = np.exp(2j * np.pi * np.outer(pos, lines[others]))
+            ro = r - (Eo @ np.linalg.lstsq(Eo, r.T, rcond=None)[0]).T if others.size else r
+            cand = lines[i] + grid
+            G = np.exp(-2j * np.pi * np.outer(cand, pos))
+            lines[i] = cand[int(np.argmax(np.sum(np.abs(G @ ro.T) ** 2, axis=1)))]
+        E = np.exp(2j * np.pi * np.outer(pos, lines))
+        A, *_ = np.linalg.lstsq(E, r.T, rcond=None)
+        return lines, A
+
+    def _tones(self, r, pos, span, cfo, allow_search=True):
+        """Tone frequencies (cycles/sample, derotated by this frame's CFO) and amplitudes: the cached set of the
+        last search if it still explains the residual (comb lines stay put for a whole burst), else a new
+        search (CPU budget nbi_cpu, like the soft RS trials)."""
+        if self.nbi_freqs is not None and not (self.nbi_research and allow_search):
+            lines = self.nbi_freqs - cfo
+            E = np.exp(2j * np.pi * np.outer(pos, lines))
+            A, *_ = np.linalg.lstsq(E, r.T, rcond=None)
+            clean = (pos < 3 * SYM) | (pos >= self.body_len)   # LTF + gap samples: no decision errors
+            res = r - (E @ A).T
+            e0, e1 = np.sum(np.abs(r[:, clean]) ** 2), np.sum(np.abs(res[:, clean]) ** 2)
+            if e1 < 0.6 * e0:                          # the cached lines still remove >= 2 dB there
+                self.nbi_cached += 1
+                return lines, A
+        if not allow_search:
+            return None, None
+        lines, A = self._find_tones(r, pos, span)
+        self.nbi_searches += 1
+        if lines is not None:
+            # accept only real narrowband interference: the lines must explain most of the residual where it
+            # has no decision errors (LTF + gap); truncated frames etc. give wideband residuals
+            clean = (pos < 3 * SYM) | (pos >= self.body_len)
+            E = np.exp(2j * np.pi * np.outer(pos, lines))
+            e0 = np.sum(np.abs(r[:, clean]) ** 2)
+            e1 = np.sum(np.abs((r - (E @ A).T)[:, clean]) ** 2)
+            if e1 > 0.5 * e0:
+                self.nbi_rejected += 1
+                lines = A = None
+        if lines is not None:                           # a better set: replace (a rejected search keeps the old)
+            self.nbi_freqs, self.nbi_research = lines + cfo, False
+        return lines, A
+
+    NBI_PASSES = 2
+
+    def _nbi_clean(self, x, s0, k, ps, base=None, first=True):
+        """Narrowband interference cancellation for frame k (first pass in ps): rebuild the expected received
+        signal from the hard decisions and the channel estimate, take the residual on the FFT windows of the
+        data symbols (80 % of the frame time: no frequency ambiguity), find tones one by one (CLEAN: strongest
+        line of the zero-filled spectrum, parabolic refinement, least-squares amplitudes per RX antenna,
+        subtract, repeat) and subtract them from the whole frame. Returns a cleaned copy of
+        x[:, s0:s0 + body + gap + 16] (frame at index 0), or None when no tone stands out."""
+        n_tot = self.body_len + self.gap_len + 16
+        if s0 + n_tot > x.shape[1] or ps is None:
+            return None
+        base = x[:, s0:] if base is None else base          # the received samples (tones are re-estimated on x,
+        if base.shape[1] < n_tot:                            # subtracted from the original each time)
+            return None
+        t = tables()
+        H, phase, eqk, bps, cfo = ps["H"][k], ps["phase"][k], ps["eq"][k], ps["bps"][k], ps["cfo"][k]
+        nrx, npl = self.n_rx, self.np
+        d = modulate(demodulate(eqk, bps), bps)
+        streams = 2 if self.mode == "smux" else 1
+        d = d.reshape(npl, N_DATA, streams)
+        X = np.zeros((2, npl, N_FFT), complex)
+        if self.mode == "smux":
+            X[0][:, DATA_BINS], X[1][:, DATA_BINS] = d[..., 0], d[..., 1]
+        elif self.mode == "alamouti":
+            s_ = d[..., 0]
+            X[0][:, DATA_BINS] = s_
+            x1 = np.empty_like(s_)
+            x1[:, 0::2], x1[:, 1::2] = -np.conj(s_[:, 1::2]), np.conj(s_[:, 0::2])
+            X[1][:, DATA_BINS] = x1
+        else:
+            X[0][:, DATA_BINS] = d[..., 0]
+        pol = t["polarity"][(1 + np.arange(npl)) % 128][:, None]
+        X[0][:, PILOT_BINS] = pol * t["pilot"]
+        if self.n_tx == 2:
+            X[1][:, PILOT_BINS] = pol * t["pilot_tx1"]
+        start = N_CP - self.backoff
+        c = POWER_NORM / np.sqrt(N_FFT)
+        ramp = np.exp(-2j * np.pi * np.fft.fftfreq(N_FFT) * self.backoff)
+        n = np.arange(self.body_len)
+        rx = x[:nrx, s0:s0 + self.body_len] * np.exp(-2j * np.pi * cfo * n)
+        pos = ((4 + np.arange(npl))[:, None] * SYM + start + np.arange(N_FFT)[None, :]).reshape(-1)
+        # channel for the reconstruction: the LTF estimate, smoothed across frequency (impulse response of at most
+        # 16 taps, least squares) using only carriers free of interference (spectrum of the trailing frame gap).
+        # A raw estimate carries the interference of the LTF symbols on the hit carriers; an estimate from the
+        # data decisions absorbs it as well: either would leave the interference out of the residual.
+        g0 = s0 + self.body_len + 8
+        gseg = x[:nrx, g0:g0 + N_FFT] * np.exp(-2j * np.pi * cfo * np.arange(g0 - s0, g0 - s0 + N_FFT))
+        pg = np.mean(np.abs(np.fft.fft(gseg, axis=-1)) ** 2, axis=0)
+        hit = pg > 10 * np.median(pg[ACTIVE_BINS])
+        taps = np.arange(-4, 8)
+        order = ACTIVE_BINS[np.argsort(pg[ACTIVE_BINS])]          # quietest carriers first
+        n_good = max(int(np.sum(~hit[ACTIVE_BINS])), 32)
+        good = np.sort(order[:n_good])
+        Phi = np.exp(-2j * np.pi * np.outer(np.arange(N_FFT), taps) / N_FFT)           # (64, taps)
+        Hdd = np.zeros_like(H)
+        for t_ in range(self.n_tx):
+            coef, *_ = np.linalg.lstsq(Phi[good], H[:, t_, good].T, rcond=None)         # (taps, nrx)
+            Hdd[:, t_, ACTIVE_BINS] = (Phi[ACTIVE_BINS] @ coef).T
+        Fw = np.fft.fft(rx[:, pos].reshape(nrx, npl, N_FFT), axis=-1) * c / ramp * np.exp(-1j * phase)[None, :, None]
+        Yh = np.einsum("rtc,tmc->rmc", Hdd, X) * np.exp(1j * phase)[None, :, None]     # (nrx, np, 64)
+        # residual in the frequency domain; cells (symbol, carrier) whose decision is doubtful are zeroed:
+        # their decision errors would show up as spurious lines at the carrier frequencies
+        dist = np.abs(eqk.reshape(npl, N_DATA, streams) - d).max(axis=-1)              # (np, 48)
+        thr = 0.25 * np.min(np.abs(np.diff(np.unique(np.round(d.real, 6))))) if bps > 1 else 0.7
+        R = Fw * np.exp(1j * phase)[None, :, None] - Yh                                 # raw (CPE) domain
+        bad = np.zeros((npl, N_FFT), bool)
+        bad[:, DATA_BINS] = dist > thr
+        R[:, bad] = 0
+        r = (np.fft.ifft(R * ramp, axis=-1) / c).reshape(nrx, -1)                     # residual windows (nrx, P)
+        # samples free of decision errors: the two LTF symbols (known) and the trailing frame gap (no signal)
+        XL = np.zeros((2, 2, N_FFT), complex)                                            # (tx, symbol, bin)
+        XL[0, :, ACTIVE_BINS] = t["ltf"][ACTIVE_BINS][:, None]
+        if self.n_tx == 2:
+            XL[1, 0, ACTIVE_BINS], XL[1, 1, ACTIVE_BINS] = t["ltf"][ACTIVE_BINS], -t["ltf"][ACTIVE_BINS]
+        yl = np.fft.ifft(np.einsum("rtc,tmc->rmc", Hdd, XL) * ramp, axis=-1) / c         # (nrx, 2, 64)
+        pos_l = (np.array([1, 2])[:, None] * SYM + start + np.arange(N_FFT)[None, :]).reshape(-1)
+        gap_n = np.arange(self.body_len + 8, self.body_len + self.gap_len)
+        x_gap = x[:nrx, s0 + self.body_len + 8:s0 + self.body_len + self.gap_len] * np.exp(-2j * np.pi * cfo * gap_n)
+        pos = np.concatenate([pos_l, pos, gap_n])
+        r = np.concatenate([rx[:, pos_l] - yl.reshape(nrx, -1), r, x_gap], axis=1)
+        lines, A = self._tones(r, pos, self.body_len + self.gap_len, cfo, allow_search=first)
+        if lines is None:
+            return None
+        self._nbi_lines = len(lines)
+        nn = np.arange(n_tot)
+        interf = (np.exp(2j * np.pi * np.outer(nn, lines)) @ A).T * np.exp(2j * np.pi * cfo * nn)   # (nrx, n_tot)
+        if base is not x[:, s0:]:                       # later pass: x already cleaned; add back, re-subtract
+            interf = interf + (base[:nrx, :n_tot] - x[:nrx, s0:s0 + n_tot])
+        out = base[:, :n_tot].copy()
+        out[:nrx] -= interf
+        return out
+
+    def _demodulate_once(self, x, starts, p_metrics, known_sig=None):
+        """One demodulation pass (see demodulate_batch).
 
         known_sig (measurements only, tools/link_budget.py): per frame the SIG head the receiver
         should assume (bytes as decoded: magic, mode byte, seq hi, seq lo) or None -> 'genie' SIG."""
@@ -612,6 +948,9 @@ class Demodulator:
         if self.n_tx == 2:
             H[:, :, 1, ACTIVE_BINS] = (Y1 - Y2)[..., ACTIVE_BINS] / (2 * L)
         noise = np.mean(np.abs(F[:, :, 1:3][..., NULL_BINS]) ** 2, axis=(1, 2, 3)) + 1e-15
+        nm = float(np.median(noise))
+        # low envelope (interference raises the per-frame estimate; the floor rises back only slowly)
+        self.noise_med = nm if self.noise_med is None else min(self.noise_med * 1.002, nm)
         # SIG
         Fs = self._cpe(F[:, :, 3:4], H, 0)
         sig_eq, sig_w = self._combine(Fs, H, noise, "sfbc" if self.n_tx == 2 else "mrc")
@@ -650,9 +989,13 @@ class Demodulator:
                 heads[k], valid[k], recovered[k] = bytes([SIG_MAGIC, self.sig_hint, 0, 0]), True, True
         # payload: equalise, de-interleave (per frame, as its SIG says), decide
         Fd = self._cpe(F[:, :, 4:], H, 1)
+        phase_d = self._cpe_phase
         scheme = {"siso": "mrc", "simo": "mrc", "alamouti": "sfbc", "smux": "mmse"}[self.mode]
         eq, weight = self._combine(Fd, H, noise, scheme)
         eq = eq.reshape(K, -1)
+        self._pass = {"H": H, "phase": phase_d, "eq": eq, "cfo": cfo,
+                      "bps": [BPS[MOD_NAMES[heads[k][1] & 3]] if (self.acm and valid[k]) else self.bps
+                              for k in range(K)]}
         # impulse noise: null carriers of each data symbol vs the LTF noise floor
         burst = np.mean(np.abs(F[:, :, 4:][..., NULL_BINS]) ** 2, axis=(1, 3)) / noise[:, None]   # (K, np)
         derate = 1.0 / np.maximum(burst / 2.0, 1.0)
@@ -660,6 +1003,9 @@ class Demodulator:
         # the quantity the ACM controller compares with its thresholds
         snr_eff = -10 * np.log10(np.mean(1.0 / np.maximum(weight.reshape(K, -1), 1e-6), axis=1))
         weight = weight * derate.reshape((K, self.np) + (1,) * (weight.ndim - 2))
+        if self.interf_mitigation:
+            f = self._interference(eq.reshape((K, self.np, N_DATA, -1)), heads, valid, x, starts, cfo, burst)
+            weight = weight * (f if weight.ndim == 4 else f[..., 0])
         weight = weight.reshape(K, -1)
         if self.coder:
             return self._ldpc_decode(eq, weight, heads, valid, cfo, snr_eff, H, noise, recovered)
@@ -822,6 +1168,72 @@ class Demodulator:
             results.append((packets if self.acm else (packets[0] if packets else None), info))
         return results
 
+    INTERF_DB = 6.0                       # a carrier / symbol this much above the frame median: interfered
+
+    def _interference(self, eq, heads, valid, x, starts, cfo, burst):
+        """Soft-weight factors (K, np, 48, 1) against narrowband and impulse interference.
+
+        Per frame, decision-directed residual power of every data carrier (mean over the frame's symbols and
+        streams) and of every data symbol (mean over carriers), each relative to its median; plus the noise +
+        interference spectrum of the frame gaps (80 zero samples after every frame, smoothed over frames).
+        A carrier or symbol > INTERF_DB above the median gets a factor 0.01 (its bytes are the first ones the
+        errors-and-erasures RS decoder erases, LDPC LLRs ~0); otherwise the factor is 1 / relative noise."""
+        K = eq.shape[0]
+        lim = 10 ** (self.INTERF_DB / 10)
+        bpsk = np.array([BPS[MOD_NAMES[heads[k][1] & 3]] if (self.acm and valid[k]) else self.bps for k in range(K)])
+        r2 = np.empty(eq.shape)
+        for b in np.unique(bpsk):                                          # batched per modulation
+            sel = np.flatnonzero(bpsk == b)
+            e = eq[sel]
+            r2[sel] = np.abs(e - modulate(demodulate(e.reshape(-1), int(b)), int(b)).reshape(e.shape)) ** 2
+        rc = r2.mean(axis=(1, 3))                                          # (K, 48)
+        rs = r2.mean(axis=(2, 3))                                          # (K, np)
+        rel_c = rc / np.maximum(np.median(rc, axis=1, keepdims=True), 1e-12)
+        rel_s = rs / np.maximum(np.median(rs, axis=1, keepdims=True), 1e-12)
+        # frame gaps after the frames: noise + interference without our signal (smoothed over frames)
+        g0 = np.array(starts) + self.body_len + 8
+        okg = (g0 + N_FFT <= x.shape[1]) if self.gap_len >= N_FFT + 8 else np.zeros(K, bool)
+        if okg.any():
+            idx = g0[okg][:, None] + np.arange(N_FFT)[None, :]
+            seg = x[:self.n_rx][:, idx] * np.exp(-2j * np.pi * cfo[okg][:, None] * np.arange(N_FFT))[None]
+            pw = np.mean(np.abs(np.fft.fft(seg, axis=-1)) ** 2, axis=0)  # (Kg, 64)
+            j = 0
+            for k in range(K):
+                if okg[k]:
+                    self.gap_ewma = pw[j] if self.gap_ewma is None else 0.7 * self.gap_ewma + 0.3 * pw[j]
+                    gd = self.gap_ewma[DATA_BINS]
+                    rel_c[k] = np.maximum(rel_c[k], gd / max(np.median(gd), 1e-15))
+                    j += 1
+        hit_c = rel_c > lim
+        hit_s = (rel_s > lim) | (burst > 2 * lim)
+        self._hit_carriers = hit_c.sum(axis=1)                             # per frame (gates the NBI rescue)
+        fc = np.where(hit_c, 0.01, 1.0 / np.maximum(rel_c, 1.0))
+        fs = np.where(hit_s, 0.01, 1.0 / np.maximum(rel_s, 1.0))
+        self.interf_frames += K
+        self.interf_hits[DATA_BINS] += hit_c.sum(axis=0)
+        self.flagged_carriers += int(hit_c.sum())
+        self.erased_symbols += int(hit_s.sum())
+        return fs[:, :, None, None] * fc[:, None, :, None]
+
+    def noise_summary(self):
+        """Report: share of frames in which each data carrier was flagged, gap noise profile (dB)."""
+        out = {"frames": self.interf_frames, "flagged_carriers": self.flagged_carriers,
+               "erased_symbols": self.erased_symbols, "false_detections": self.false_detections,
+               "nbi_attempts": self.nbi_attempts, "nbi_rescued": self.nbi_rescued, "nbi_searches": self.nbi_searches,
+               "nbi_cached": self.nbi_cached, "nbi_skipped_cpu": self.nbi_skipped,
+               "nbi_proactive": self.nbi_proactive, "nbi_rejected": self.nbi_rejected, "nbi_stale": self.nbi_stale,
+               "nbi_lines": None if self.nbi_freqs is None else len(self.nbi_freqs)}
+        if self.interf_frames:
+            share = self.interf_hits[DATA_BINS] / self.interf_frames
+            top = np.argsort(share)[::-1][:8]
+            out["most_flagged"] = [{"carrier": int(DATA_K[i]), "share": round(float(share[i]), 3)}
+                                   for i in top if share[i] > 0]
+        if self.gap_ewma is not None:
+            g = 10 * np.log10(self.gap_ewma[ACTIVE_BINS] + 1e-20)
+            out["gap_db_rel_median"] = {"max": round(float(g.max() - np.median(g)), 1),
+                                        "carrier_of_max": int(ACTIVE_K[int(np.argmax(g))])}
+        return out
+
     def _soft_allowed(self):
         """Token bucket: erasure trials may use at most soft_cpu of wall time, so a
         bad link cannot make the receiver fall behind real time."""
@@ -843,6 +1255,7 @@ class Demodulator:
         if self.n_tx == 2:
             pred = pred + H[:, :, 1, PILOT_BINS][:, :, None, :] * (pol[:, None] * t["pilot_tx1"])
         phase = np.angle(np.sum(np.conj(pred) * F[..., PILOT_BINS], axis=(1, 3)))   # (K, nsym)
+        self._cpe_phase = phase
         return F * np.exp(-1j * phase)[:, None, :, None]
 
     def _combine(self, F, H, noise, scheme):

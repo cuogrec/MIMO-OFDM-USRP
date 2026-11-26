@@ -787,6 +787,95 @@ def test_radio_feedback_survives_tx_stalls():
           f"{src.stalls} stalls, {src.late_events} late events")
 
 
+def _cond_channel(cond_db, seed=1):
+    rng = np.random.default_rng(seed)
+    def unitary():
+        q, _ = np.linalg.qr(rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2)))
+        return q
+    sv = np.array([1, 10 ** (-cond_db / 20)])
+    return unitary() @ np.diag(sv * np.sqrt(2 / np.sum(sv ** 2))) @ unitary()
+
+
+def test_interference_sources_and_ltf_check():
+    """--sim-interf parsing / timing; a periodic interferer alone (comb lines, no frame) gives no detection
+    (LTF check, counted as false detections), real frames are still found under it."""
+    from ofdm321.blocks import parse_interference, _interference_samples
+    src = parse_interference("comb:75e3:-15:11:3:0.2:1,tone:23e3:-10,burst:0:0.001:0.05:both", 1e6, 0.01)
+    assert [x["kind"] for x in src] == ["comb", "tone", "burst"] and src[0]["ports"] == [1] and src[2]["ports"] == [0, 1]
+    assert len(src[0]["f"]) == 13 and abs(np.mean(np.abs(_interference_samples(src[0], 0.05, 20000, 1e6,
+                                                  np.random.default_rng(0))) ** 2) / 0.01 - 10 ** -1.5) < 0.01
+    rng = np.random.default_rng(0)
+    assert _interference_samples(src[0], 1.0, 1000, 1e6, rng) is None                 # between the bursts
+    assert _interference_samples(src[0], 3.05, 1000, 1e6, rng) is not None            # second burst of the pair
+    # lines every 31.25 kHz = period 32 samples, like our STF: Schmidl-Cox fires at every burst edge
+    comb = parse_interference("comb:31.25e3:0:0.004:0:0.002", 1e6, 0.01)[0]
+    rx = Demodulator("siso", "qpsk")
+    noise = 0.003 * (rng.standard_normal((2, 30000)) + 1j * rng.standard_normal((2, 30000)))
+    y = noise.copy()
+    y[0] += _interference_samples(comb, 0.0, 30000, 1e6, rng)
+    found, start = 0, 0
+    while True:
+        s0, _ = rx.find(y, start)
+        if s0 is None:
+            break
+        found += 1
+        start = s0 + 200
+    old = Demodulator("siso", "qpsk", interf_mitigation=False, ltf_confirm=None)
+    n_old, start = 0, 0
+    while True:
+        s0, _ = old.find(y, start)
+        if s0 is None:
+            break
+        n_old += 1
+        start = s0 + 200
+    assert found == 0 and rx.false_detections > 0 and n_old > 0, (found, rx.false_detections, n_old)
+    tx = Modulator("siso", "qpsk")
+    pk = bytes(range(212))
+    y = channel(tx.frame(pk), np.eye(2), 25, rng)
+    tone = parse_interference("comb:75e3:-15:1:0:1", 1e6, 0.01)[0]
+    tone["period"] = None
+    y[0] += _interference_samples(tone, 0.0, y.shape[1], 1e6, rng)
+    s0, p = rx.find(y)
+    assert s0 == 300 and rx.demodulate(y, s0, p)[0] == pk
+
+
+def test_narrowband_canceller_saves_smux_frames():
+    """SMUX QPSK, cond 14 dB, SNR 30 dB, comb of 13 lines at -18 dB on RX0 (RF 26/11): RS(248,216) loses
+    every frame with the v0.6.2 receiver; the decision-directed canceller (cached lines, gap-based
+    cancellation) keeps almost all of them, and it finds nothing on a clean link."""
+    from ofdm321.blocks import parse_interference, _interference_samples
+    H = _cond_channel(14)
+    src = parse_interference("comb:75e3:-18:1:0:1", 1e6, 0.01)[0]
+    src["period"] = None
+    tx = Modulator("smux", "qpsk", tx_rms=0.1)
+    lost = {}
+    for mit in (False, True):
+        rx = Demodulator("smux", "qpsk", interf_mitigation=mit, soft_cpu=1e9)
+        rng = np.random.default_rng(5)
+        bad = 0
+        for f in range(30):
+            pk = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+            y = H @ tx.frame(pk).astype(complex)
+            y = np.concatenate([np.zeros((2, 300)), y, np.zeros((2, 300))], 1)
+            y += np.sqrt(0.01 / 1e3 / 2) * (rng.standard_normal(y.shape) + 1j * rng.standard_normal(y.shape))
+            y[0] += _interference_samples(src, f * 0.01, y.shape[1], 1e6, rng)
+            s0, p = rx.find(y)
+            bad += s0 is None or rx.demodulate(y, s0, p)[0] != pk
+        lost[mit] = bad
+    assert lost[False] >= 25 and lost[True] <= 4, lost
+    rx = Demodulator("smux", "qpsk", soft_cpu=1e9)
+    rng = np.random.default_rng(6)
+    for f in range(10):
+        pk = rng.integers(0, 256, 212, dtype=np.uint8).tobytes()
+        y = H @ tx.frame(pk).astype(complex)
+        y = np.concatenate([np.zeros((2, 300)), y, np.zeros((2, 300))], 1)
+        y += np.sqrt(0.01 / 1e3 / 2) * (rng.standard_normal(y.shape) + 1j * rng.standard_normal(y.shape))
+        s0, p = rx.find(y)
+        assert rx.demodulate(y, s0, p)[0] == pk
+    assert rx.nbi_freqs is None and rx.nbi_proactive == 0
+    print("  SMUX QPSK, comb -18 dB, 30 frames lost: v0.6.2", lost[False], "| v0.6.3", lost[True])
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

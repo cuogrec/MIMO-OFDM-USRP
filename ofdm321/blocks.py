@@ -621,7 +621,10 @@ class MimoRxSink(gr.sync_block):
                                  acm=self.acm, fine_timing=bool(getattr(s, "fine_timing", True)),
                                  sig_recover=bool(getattr(s, "sig_recover", True)),
                                  fec=getattr(s, "fec", "rs"), ldpc_rate=getattr(s, "ldpc_rate", "3/4"),
-                                 ldpc_iter=int(getattr(s, "ldpc_iter", 20)))
+                                 ldpc_iter=int(getattr(s, "ldpc_iter", 20)),
+                                 interf_mitigation=bool(getattr(s, "rx_interf_mitigation", True)),
+                                 ltf_confirm=0.25 if bool(getattr(s, "rx_interf_mitigation", True)) else None,
+                                 gap=int(s.frame_gap_samples))
         self.snr_eff = None                    # filtered effective SNR (ACM feedback)
         self.modulation = None if self.acm else s.modulation
         self.mod_frames = {}
@@ -815,7 +818,9 @@ class MimoRxSink(gr.sync_block):
 
     def snapshot(self):
         with self.lock:
-            return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
+            return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch),
+                        false_detections=int(self.demod.false_detections),
+                        noise=self.demod.noise_summary(), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
                         rx_rms=self.rx_rms, rx_rms_ch=self.rx_rms_ch, tracking=self.expected is not None,
                         interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped,
                         acm=self.acm, modulation=self.modulation, snr_eff_db=self.snr_eff,
@@ -913,8 +918,18 @@ class MimoChannelSim(gr.sync_block):
         self.samples = 0
         self.profile = parse_snr_profile(getattr(s, "sim_snr_profile", ""))
         self.snr_now = self.snr_db
+        cond = getattr(s, "sim_cond_db", None)
+        if cond is not None:                          # 2x2 channel with a given condition number (smux tests)
+            def unitary():
+                q, _ = np.linalg.qr(rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2)))
+                return q
+            sv = np.array([1.0, 10 ** (-cond / 20)])
+            self.H = unitary() @ np.diag(sv * np.sqrt(2 / np.sum(sv ** 2))) @ unitary()
+            self.H2 = 0.05 * self.H
         self.H = self.H.astype(np.complex64)
         self.H2 = self.H2.astype(np.complex64)
+        self.interf = parse_interference(getattr(s, "sim_interf", ""), s.sample_rate, self.tx_rms ** 2)
+        self.irng = np.random.default_rng(s.sim_seed + 100)
 
     def work(self, input_items, output_items):
         x = np.stack(input_items)
@@ -928,6 +943,11 @@ class MimoChannelSim(gr.sync_block):
         if self.profile is not None:            # time-varying SNR (ACM tests): scale the noise
             self.snr_now = self.profile(self.samples / self.rate)
             noise = noise * np.float32(10 ** ((self.snr_db - self.snr_now) / 20))
+        for src in self.interf:
+            v = _interference_samples(src, self.samples / self.rate, n, self.rate, self.irng)
+            if v is not None:
+                for port in src["ports"]:
+                    y[port] += v
         self.samples += n
         y += noise
         self.noise_pos = (self.noise_pos + n) % (self.noise.shape[1] - 65536)
@@ -936,6 +956,60 @@ class MimoChannelSim(gr.sync_block):
         output_items[0][:] = y[0] * rot
         output_items[1][:] = y[1] * rot
         return n
+
+
+def parse_interference(text, rate, ref_power):
+    """'' -> []. Else a list of interference sources (simulation, RX ports), comma separated:
+         comb:SPACING:DB:PERIOD:GAP[:DUR[:PORT]]  lines every SPACING Hz over the band, DB = total power vs the
+                                                 signal, on in pairs of DUR s (default 0.4) every PERIOD s, the
+                                                 second GAP s after the first (RF 26/11: comb:75e3:-15:11:3)
+         tone:FREQ:DB[:PORT]                     one continuous line at FREQ Hz from the centre
+         burst:DB:DUR:PERIOD[:PORT]              wideband noise bursts of DUR s every PERIOD s (impulses)
+       PORT: 0 (default), 1 or both."""
+    out = []
+    rng = np.random.default_rng(3)
+    for spec in [t for t in str(text or "").split(",") if t.strip()]:
+        kind, *p = spec.strip().split(":")
+        port = lambda v: {"0": [0], "1": [1], "both": [0, 1]}[v]
+        if kind == "comb":
+            sp, db, per, gap = map(float, p[:4])
+            dur = float(p[4]) if len(p) > 4 else 0.4
+            ports = port(p[5]) if len(p) > 5 else [0]
+            m = np.arange(-int(rate / 2 / sp), int(rate / 2 / sp) + 1)
+            f = (m + 0.37) * sp
+            f = f[np.abs(f) < 0.5 * rate]
+            out.append({"kind": kind, "f": f / rate, "amp": np.sqrt(ref_power * 10 ** (db / 10) / len(f)),
+                        "phase": rng.uniform(0, 2 * np.pi, len(f)), "period": per, "gap": gap, "dur": dur,
+                        "ports": ports})
+        elif kind == "tone":
+            out.append({"kind": kind, "f": np.array([float(p[0]) / rate]), "amp": np.sqrt(ref_power * 10 ** (float(p[1]) / 10)),
+                        "phase": np.zeros(1), "period": None, "ports": port(p[2]) if len(p) > 2 else [0]})
+        elif kind == "burst":
+            db, dur, per = map(float, p[:3])
+            out.append({"kind": kind, "sigma": np.sqrt(ref_power * 10 ** (db / 10) / 2), "dur": dur, "period": per,
+                        "gap": None, "ports": port(p[3]) if len(p) > 3 else [0]})
+        else:
+            raise ValueError("sim_interf: comb:SPACING:DB:PERIOD:GAP[:DUR[:PORT]] | tone:FREQ:DB[:PORT] | "
+                             "burst:DB:DUR:PERIOD[:PORT]")
+    return out
+
+
+def _interference_samples(src, t0, n, rate, rng):
+    """Samples of one interference source for the n samples starting at time t0 (s), or None when off."""
+    t = t0 + np.arange(n) / rate
+    if src["period"] is not None:
+        ph = np.mod(t, src["period"])
+        on = (ph < src["dur"]) | ((src["gap"] is not None) & (ph >= (src["gap"] or 0)) & (ph < (src["gap"] or 0) + src["dur"]))
+        if not on.any():
+            return None
+    else:
+        on = None
+    if src["kind"] == "burst":
+        v = src["sigma"] * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+    else:
+        k = np.round(t * rate).astype(np.int64)
+        v = src["amp"] * np.exp(1j * (2 * np.pi * np.outer(k, src["f"]) % (2 * np.pi) + src["phase"])).sum(axis=1)
+    return (v * on if on is not None else v).astype(np.complex64)
 
 
 def parse_snr_profile(text):

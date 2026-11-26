@@ -115,6 +115,9 @@ class Settings:
                                      # as far as the GNU Radio + USRP buffers accept, ~0.13 s video + 0.26 s feedback)
     tx_buffer_samples: int = 8192    # RF: GNU Radio max output buffer of the TX sources (items)
     tx_resync: bool = True           # v0.6.2: a late TX source starts a new burst (tx_eob, tx_sob + tx_time) at now + lead
+    rx_interf_mitigation: bool = True   # RX v0.6.3: per-carrier/per-symbol noise in the soft weights, LTF check
+    sim_interf: str = ""             # sim: interference at the RX (blocks.parse_interference), e.g. comb:75e3:-15:11:3
+    sim_cond_db: float | None = None # sim: 2x2 channel with this condition number (dB) instead of --channel
     sim_stall: str = ""              # sim: random TX source stalls RATE:MIN_MS:MAX_MS[:gil] (blocks.parse_stall)
     sim_tx_device_samples: int = 131072   # sim: emulated USRP TX buffer per stream (reproduces the RF delay)
     udp_port: int = 5002
