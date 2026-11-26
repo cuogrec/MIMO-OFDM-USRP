@@ -69,6 +69,7 @@ SIG_MAGIC = 0xA5
 MODE_CODES = {"siso": 0, "simo": 1, "alamouti": 2, "smux": 3}
 MOD_CODES = {"qpsk": 0, "16qam": 1, "bpsk": 2, "64qam": 3}
 MOD_NAMES = {v: k for k, v in MOD_CODES.items()}
+MODE_NAMES = {v: k for k, v in MODE_CODES.items()}
 BPS = {"bpsk": 1, "qpsk": 2, "16qam": 4, "64qam": 6}
 ACM_FLAG = 0x80
 NP_ACM = 42                                   # data symbols of every ACM frame
@@ -496,6 +497,7 @@ class Demodulator:
         self.gap_len = gap                    # frame gap (zeros) after every frame: noise-only window
         self.ltf_confirm = ltf_confirm if fine_timing else None
         self.false_detections = 0
+        self.alt_sig = {}                     # SIG read in another mode/format -> count (mode mismatch)
         self.gap_ewma = None                  # (64,) noise + interference power per FFT bin, frame gaps
         self.interf_hits = np.zeros(N_FFT)    # frames in which each bin was flagged as interfered
         self.interf_frames = 0
@@ -978,6 +980,12 @@ class Demodulator:
             for k, h in enumerate(known_sig):
                 if h is not None:
                     heads[k], valid[k] = bytes(h), True
+        else:
+            for k in range(K):                     # SIG of another mode? (TX and RX started differently)
+                if not valid[k]:
+                    alt = self._alt_sig(sig_eq[k], sig_w[k])
+                    if alt:
+                        self.alt_sig[alt] = self.alt_sig.get(alt, 0) + 1
         # SIG-less recovery: a frame whose SIG fails is still decoded with what the receiver already
         # knows (mode and modulation from the configuration, the interleaver / ACM modulation of the
         # last good SIG); the packet is kept only if RS and CRC32 pass. No format change.
@@ -1053,6 +1061,7 @@ class Demodulator:
                 info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(eq[k]))
                 if self.n_tx == 2:
                     info["cond_db"] = self._cond(H[k])
+                info["h_db"] = self._h_db(H[k])
             results.append((packet, info))
         return results
 
@@ -1108,6 +1117,7 @@ class Demodulator:
                 info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(e, bps))
                 if self.n_tx == 2:
                     info["cond_db"] = self._cond(H[k])
+                info["h_db"] = self._h_db(H[k])
             results.append((packets, info))
         return results
 
@@ -1165,8 +1175,23 @@ class Demodulator:
                 info.update(snr_db=10 * np.log10(p / noise[k]), evm_db=self._evm(e, bps))
                 if self.n_tx == 2:
                     info["cond_db"] = self._cond(H[k])
+                info["h_db"] = self._h_db(H[k])
             results.append((packets if self.acm else (packets[0] if packets else None), info))
         return results
+
+    def _alt_sig(self, se, sw):
+        """Description of the transmitter mode if this SIG reads in a format/mode other than ours, else None:
+        the fixed format (magic + CRC16) or the ACM one (repeated 24 bits + CRC8)."""
+        d = np.packbits((se.real < 0).astype(np.uint8)).tobytes()
+        if d[0] == SIG_MAGIC and crc16(d[:4]) == struct.unpack(">H", d[4:6])[0]:
+            fec = f" LDPC {LDPC_RATES[d[2] >> 6]}" if d[1] & FEC_FLAG else ""
+            return f"cố định {MODE_NAMES[d[1] >> 4 & 3]} {MOD_NAMES[d[1] & 3]}{fec}"
+        sw = np.asarray(sw, float).reshape(-1)
+        soft = se.real * (sw if sw.size == se.size else np.resize(sw, se.size))
+        b = np.packbits(((soft[:24] + soft[24:]) < 0).astype(np.uint8))
+        if crc8(bytes(b[:2])) == b[2] and b[0] & ACM_FLAG and not b[0] & INTERLEAVE_MASK:
+            return f"ACM {MODE_NAMES[b[0] >> 4 & 3]}{' LDPC' if b[0] & FEC_FLAG else ''}"
+        return None
 
     INTERF_DB = 6.0                       # a carrier / symbol this much above the frame median: interfered
 
@@ -1307,6 +1332,11 @@ class Demodulator:
         s = eq.reshape(-1)
         ref = modulate(demodulate(s, bps), bps)
         return float(10 * np.log10(np.mean(np.abs(s - ref) ** 2) + 1e-15))
+
+    def _h_db(self, H):
+        """|h(rx, tx)| per element (dB, mean power over the data carriers), (nrx x ntx) list."""
+        p = np.mean(np.abs(H[:, :self.n_tx][..., DATA_BINS]) ** 2, axis=-1)
+        return np.round(10 * np.log10(p + 1e-20), 1).tolist()
 
     def _cond(self, H):
         sv = np.linalg.svd(np.transpose(H[:, :, DATA_BINS], (2, 0, 1)), compute_uv=False)

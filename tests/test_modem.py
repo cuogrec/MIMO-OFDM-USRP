@@ -911,6 +911,53 @@ def test_spectrum_survey_on_synthetic_iq():
     assert res["recommendation"][0]["center_mhz"] < 920.95                     # away from the comb at 921 MHz
 
 
+def test_mode_mismatch_is_named_and_rx_diagnostics():
+    """26/11: TX and RX in different modes gave 100 % SIG failures without a clear message. The receiver now
+    reads the SIG in the other format / mode and names the TX mode; rx_diagnostics summarises |h|, idle level."""
+    from ofdm321.runner_split import rx_diagnostics
+    rng = np.random.default_rng(41)
+    cases = [(dict(acm=True), dict(), "ACM alamouti"),                       # TX ACM, RX fixed
+             (dict(), dict(acm=True), "cố định alamouti qpsk"),              # TX fixed, RX ACM
+             (dict(modulation="16qam"), dict(), "cố định alamouti 16qam")]   # other modulation
+    for txk, rxk, want in cases:
+        mod = txk.pop("modulation", "qpsk")
+        tx = Modulator("alamouti", mod, **txk)
+        rx = Demodulator("alamouti", "qpsk", **rxk)
+        pk = [bytes(212)] * 2 if txk.get("acm") else bytes(212)
+        for _ in range(3):
+            y = channel(tx.frame(pk) if not txk.get("acm") else tx.frame(pk, "qpsk"), np.eye(2), 30, rng)
+            y = np.concatenate([y, np.zeros((2, 4000))], axis=1)      # room for the longer ACM frame
+            s0, p = rx.find(y)
+            out, info = rx.demodulate(y, s0, p)
+            assert info["reason"] == "sig"
+        assert rx.alt_sig.get(want) == 3, (want, rx.alt_sig)
+    hist = [{"ok": 0, "rs": 0, "h_db": None, "rx_rms_rf0": 0.0004, "rx_rms_rf1": 0.0003},
+            {"ok": 0, "rs": 0, "h_db": None, "rx_rms_rf0": 0.0004, "rx_rms_rf1": 0.0003},
+            {"ok": 500, "rs": 2, "h_db": [[-20, -30], [-25, -21]], "rx_rms_rf0": 0.01, "rx_rms_rf1": 0.02},
+            {"ok": 1000, "rs": 2, "h_db": [[-21, -30], [-25, -22]], "rx_rms_rf0": 0.01, "rx_rms_rf1": 0.02}]
+    d = rx_diagnostics(hist, {"false_detections": 3, "uhd_overflows": 0, "alt_sig": {}}, None)
+    assert d["idle_seconds"] == 1 and d["idle_rms_dbfs"]["rx_rms_rf0"] == round(20 * np.log10(0.0004), 1)
+    assert d["h_db_median"] == [[-20.5, -30.0], [-25.0, -21.5]] and d["false_detections"] == 3
+
+
+def test_rf_timeline_plot():
+    """tools/rf_fer_curve.py: per-run time plot (errors/s, RF0/RF1 level, cond) from RX histories."""
+    import tempfile
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from rf_fer_curve import plot_timelines
+    h, ok, rs = [], 0, 0
+    for i in range(30):
+        ok += 700
+        rs += 60 if i % 11 in (0, 3) else 0
+        h.append({"t": float(i), "ok": ok, "rs": rs, "crc": 0, "sig": 0, "rx_rms_rf0": 0.006, "rx_rms_rf1": 0.014,
+                  "cond_db": 14.5})
+    rep = {"history": h, "settings": {"mimo_mode": "smux", "modulation": "qpsk"},
+           "_path": Path("/x/20261126_185106_rx_rf_smux_qpsk/report.json")}
+    with tempfile.TemporaryDirectory() as d:
+        assert plot_timelines([rep], Path(d) / "t.png") and (Path(d) / "t.png").stat().st_size > 1000
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

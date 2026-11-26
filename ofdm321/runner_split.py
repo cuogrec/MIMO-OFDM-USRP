@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 
+import numpy as np
 from gnuradio import blocks, gr
 
 from . import __version__
@@ -139,6 +140,27 @@ def run_medians(history):
         import math
         out["rf1_vs_rf0_db"] = round(20 * math.log10(out["rx_rms_rf1"] / out["rx_rms_rf0"]), 1)
     return out
+
+
+def rx_diagnostics(history, r, s):
+    """RX report section: median |h(rx,tx)| (dB) per element, noise floor of the seconds without frames,
+    interference summary, false detections, UHD overflows, SIGs seen in another mode."""
+    from statistics import median
+    hs = [h["h_db"] for h in history if h.get("h_db")]
+    h_med = None
+    if hs:
+        a = np.array(hs, float)
+        h_med = np.round(np.median(a, axis=0), 1).tolist()
+    idle = [h for h, p in zip(history[1:], history[:-1])
+            if h.get("ok") is not None and h["ok"] + h["rs"] == p["ok"] + p["rs"]]
+    idle_db = {}
+    for k in ("rx_rms_rf0", "rx_rms_rf1"):
+        v = [h[k] for h in idle if h.get(k)]
+        idle_db[k] = round(20 * np.log10(median(v)), 1) if v else None
+    return {"h_db_median": h_med, "h_db_note": "rows = RX (RF0, RF1), columns = TX antennas",
+            "idle_seconds": len(idle), "idle_rms_dbfs": idle_db, "noise": r.get("noise"),
+            "false_detections": r.get("false_detections"), "uhd_overflows": r.get("uhd_overflows"),
+            "alt_sig": r.get("alt_sig")}
 
 
 def apply_run_medians(rx_snapshot, history):
@@ -710,6 +732,32 @@ def main_rx(argv=None):
         history = report["history"] = []           # one row per second (tools/plot_run.py)
         report["clock"] = {"monotonic": t_start, "time": time.time()}
 
+        rx_desc = (f"{'ACM' if s.acm else 'cố định'} {s.mimo_mode}{'' if s.acm else ' ' + s.modulation}"
+                   f"{' LDPC' + ('' if s.acm else ' ' + s.ldpc_rate) if s.fec == 'ldpc' else ''}")
+        mismatch = report["mode_mismatch"] = []
+        mm_state = {"warned": -1e9, "alt": {}}
+
+        def check_mode_mismatch(r):
+            """> 90 % SIG failures over 2 s while SIGs read in another mode: say which mode the TX runs."""
+            if len(history) < 3:
+                mm_state["alt"] = dict(r.get("alt_sig", {}))
+                return
+            h0, h1 = history[-3], history[-1]
+            det = h1["detected"] - h0["detected"]
+            sig = h1["sig"] - h0["sig"]
+            alt_now = dict(r.get("alt_sig", {}))
+            d_alt = {k: v - mm_state["alt"].get(k, 0) for k, v in alt_now.items() if v > mm_state["alt"].get(k, 0)}
+            mm_state["alt"] = alt_now
+            if det >= 30 and sig > 0.9 * det and d_alt and sum(d_alt.values()) >= 0.2 * sig:
+                tx_desc = max(d_alt, key=d_alt.get)
+                now = time.monotonic()
+                if now - mm_state["warned"] > 10:
+                    LOG.error("LỆCH CHẾ ĐỘ: máy phát đang chạy %s, máy thu đang chạy %s (%d/%d khung SIG hỏng "
+                              "trong 2 s) -> chạy lại hai bên cùng --mimo/--mod/--acm/--fec", tx_desc, rx_desc, sig, det)
+                    mm_state["warned"] = now
+                if not mismatch or mismatch[-1]["tx"] != tx_desc:
+                    mismatch.append({"t": h1["t"], "tx": tx_desc, "rx": rx_desc, "sig_fail_share": round(sig / det, 3)})
+
         def tick():
             """One monitor step (every second). Returns False when the RX should stop."""
             vr.poll()
@@ -758,7 +806,10 @@ def main_rx(argv=None):
                 "rx_rms_rf1": None if radio_fb else round(r["rx_rms_ch"][1], 5),
                 "data": v["data_packets"], "missing": v["missing_data_packets"],
                 "fb_frames": fbsrc.frames if fbsrc is not None else None,
-                "sim_snr_db": round(ch_sim.snr_now, 2) if ch_sim is not None else None})
+                "sim_snr_db": round(ch_sim.snr_now, 2) if ch_sim is not None else None,
+                "detected": r["detected"], "false_det": r.get("false_detections"), "h_db": r.get("h_db"),
+                "alt_sig": sum(r.get("alt_sig", {}).values()), "uhd_overflows": r.get("uhd_overflows")})
+            check_mode_mismatch(r)
             if gui is not None:
                 gui.set_status(line.replace(" | ", "\n"))
             if stop.is_set() or time.monotonic() >= limit:
@@ -798,6 +849,7 @@ def main_rx(argv=None):
         if rx.last_const is not None:              # last constellation snapshot, for offline plots
             import numpy as np
             np.save(run_dir / "const_last.npy", rx.last_const)
+        report["diagnostics"] = rx_diagnostics(history, r, s)
         report.update(rx=apply_run_medians(r, history), video=v, video_rx_bytes=ts.stat().st_size,
                       video_rx_sha256=sha256_file(ts) if ts.stat().st_size else None, video_rx_frames=info)
         if a.compare:

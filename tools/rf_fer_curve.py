@@ -131,7 +131,8 @@ def plot(rows, curves, path, title):
     mimos = [m for m in ("siso", "simo", "alamouti", "smux") if any(r["mimo"] == m for r in rows)]
     fig, axs = plt.subplots(1, len(mimos), figsize=(6.5 * len(mimos), 5.2), squeeze=False)
     runs = sorted({r["run"] for r in rows})
-    markers = dict(zip(runs, "os^Dv<>p*h"))
+    shapes = "os^Dv<>p*hPXd"
+    markers = {run: shapes[i % len(shapes)] for i, run in enumerate(runs)}
     for ax, mimo in zip(axs[0], mimos):
         ax.set_yscale("log")
         ax.axhline(0.01, color=MUTED, lw=0.8, ls=(0, (2, 3)))
@@ -156,6 +157,61 @@ def plot(rows, curves, path, title):
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)
+
+
+def plot_timelines(reps, path, max_runs=16):
+    """Per run (rows): codeword errors per second (RS + CRC + SIG), RX level per port (rx_rms_rf0 / rf1, dBFS)
+    and cond (2-TX modes): periodic error bursts and a weak or interfered port show up side by side."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sim_sweep_plots import INK2, MUTED, SERIES, _style
+    _style(plt)
+    runs = []
+    for r in reps:
+        h = r["history"]
+        if len(h) < 3 or not any((x.get("ok") or 0) > 0 for x in h):
+            continue
+        runs.append(r)
+    runs = runs[:max_runs]
+    if not runs:
+        return None
+    fig, axs = plt.subplots(len(runs), 3, figsize=(16, 1.9 * len(runs) + 0.8), squeeze=False)
+    for i, r in enumerate(runs):
+        h, s = r["history"], r["settings"]
+        t = [x["t"] for x in h[1:]]
+        d = lambda k: [max(0, (b.get(k) or 0) - (a.get(k) or 0)) for a, b in zip(h, h[1:])]
+        err = [a + b + c for a, b, c in zip(d("rs"), d("crc"), d("sig"))]
+        ok = d("ok")
+        name = f"{r['_path'].parent.name[9:15]} {s['mimo_mode']} {s['modulation']}{' ACM' if s.get('acm') else ''}"
+        ax = axs[i, 0]
+        ax.plot(t, err, color=SERIES[1], lw=1.2, drawstyle="steps-post")
+        ax.set_ylabel(name, fontsize=7, color=INK2)
+        ax.set_title("codeword lỗi / s (RS + CRC + SIG)" if i == 0 else "", fontsize=9)
+        ax.text(0.99, 0.92, f"tổng {sum(err)} lỗi / {sum(ok) + sum(err)}", transform=ax.transAxes, ha="right",
+                va="top", fontsize=7, color=MUTED)
+        ax = axs[i, 1]
+        for c, k in enumerate(("rx_rms_rf0", "rx_rms_rf1")):
+            pts = [(x["t"], 20 * np.log10(x[k])) for x in h if x.get(k)]
+            if pts:
+                ax.plot(*zip(*pts), color=SERIES[c], lw=1.0, label="RF0" if c == 0 else "RF1")
+        ax.set_title("mức thu (dBFS)" if i == 0 else "", fontsize=9)
+        if i == 0:
+            ax.legend(loc="lower right", fontsize=7)
+        ax = axs[i, 2]
+        pts = [(x["t"], x["cond_db"]) for x in h if x.get("cond_db") is not None]
+        if pts:
+            ax.plot(*zip(*pts), color=SERIES[2], lw=1.0)
+        else:
+            ax.text(0.5, 0.5, "1 anten phát: không có cond", transform=ax.transAxes, ha="center", fontsize=7,
+                    color=MUTED)
+        ax.set_title("cond (dB)" if i == 0 else "", fontsize=9)
+    for ax in axs[-1]:
+        ax.set_xlabel("s")
+    fig.tight_layout()
+    fig.savefig(path, dpi=95)
+    plt.close(fig)
+    return path
 
 
 def _stays_below(xs, fers, target=0.01):
@@ -231,6 +287,9 @@ def main(argv=None):
               f"  (errors {s['errors']}/{s['codewords']})")
     print(out / f"rf_{date}.csv")
     print(out / f"rf_{date}.png")
+    tl = plot_timelines(reps, out / f"rf_{date}_timeline.png")
+    if tl:
+        print(tl)
 
 
 if __name__ == "__main__":

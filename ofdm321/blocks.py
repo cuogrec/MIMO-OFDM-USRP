@@ -659,6 +659,8 @@ class MimoRxSink(gr.sync_block):
         self.proc_lat, self.ingest_lat = deque(maxlen=4000), deque(maxlen=4000)
         self.proc_tick, self.ingest_tick = [], []
         self.work_tick = []                    # time inside work() (CPU / GIL budget of this receiver)
+        self.rx_time_tags = 0
+        self.h_db = None
         self.work_all = deque(maxlen=20000)
 
     # -- buffer ---------------------------------------------------------
@@ -674,6 +676,10 @@ class MimoRxSink(gr.sync_block):
         t_work = time.monotonic()
         a, b = input_items
         m = len(a)
+        if m:                                  # gr-uhd tags rx_time at the start and after every overflow (O / D)
+            for t in self.get_tags_in_window(0, 0, m):
+                if pmt.symbol_to_string(t.key) == "rx_time":
+                    self.rx_time_tags += 1
         if self.n + m > self.cap:
             keep = self.body + 4 * SYM
             self._drop(self.n - keep)
@@ -768,6 +774,7 @@ class MimoRxSink(gr.sync_block):
                 if "snr_db" in info:
                     self.snr, self.evm = info["snr_db"], info["evm_db"]
                     self.cond = info.get("cond_db", self.cond)
+                    self.h_db = info.get("h_db", self.h_db)
             if reason == "sig":                    # false or broken frame: re-acquire after it
                 self._drop(s0 + SYM)
                 self.expected = None
@@ -820,7 +827,8 @@ class MimoRxSink(gr.sync_block):
         with self.lock:
             return dict(self.stats, fec_mismatch=int(self.demod.fec_mismatch),
                         false_detections=int(self.demod.false_detections),
-                        noise=self.demod.noise_summary(), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
+                        noise=self.demod.noise_summary(), alt_sig=dict(self.demod.alt_sig), h_db=self.h_db,
+                        uhd_rx_time_tags=self.rx_time_tags, uhd_overflows=max(0, self.rx_time_tags - 1), snr_db=self.snr, evm_db=self.evm, cond_db=self.cond,
                         rx_rms=self.rx_rms, rx_rms_ch=self.rx_rms_ch, tracking=self.expected is not None,
                         interleaver=self.interleaver, soft_skipped=self.demod.soft_skipped,
                         acm=self.acm, modulation=self.modulation, snr_eff_db=self.snr_eff,
