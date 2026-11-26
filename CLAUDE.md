@@ -1,7 +1,7 @@
 # CLAUDE.md — MIMO-OFDM-USRP
 
 Real-time video over an OFDM link (2x2 MIMO or SISO) between two USRP N321, written in
-Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.2.
+Python + numpy on GNU Radio 3.10.9 / UHD 4.6 (Ubuntu 24.04). Current version: v0.6.3.
 
 **Reply to the user in Vietnamese.** Short, concrete answers; give exact commands to run.
 
@@ -56,6 +56,12 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
   v0.6 LTF fine timing + SIG-less recovery (`--legacy-sync` = v0.5 front end), CFO, H 2x2, CPE, MRC/SFBC/MMSE,
   batched numpy), interleavers none/block/carrier, soft errors-and-erasures RS, ACM frames
   (fixed 42 data symbols, 1/2/4/6 codewords for BPSK/QPSK/16QAM/64QAM, repeated 24-bit SIG + CRC8).
+- Interference (v0.6.3, `modem.Demodulator`): decision-directed narrowband canceller (`_nbi_clean`: rebuild from
+  hard decisions + frequency-smoothed channel on quiet carriers, residual on FFT windows + LTF + gap, CLEAN tone
+  search, subtract, decode again); cached/tracked tone set cancels every frame from its gaps (`_proactive_nbi`);
+  per-carrier/per-symbol soft weights (> 6 dB above median: erased); LTF check of Schmidl-Cox candidates
+  (`false_detections`). `--no-interf-mitigation` = v0.6.2. Sim: `--sim-interf comb:75e3:-15:11:3:0.12`,
+  `tone:F:DB`, `burst:DB:DUR:PER`, `--sim-cond DB`. RX names a TX/RX mode mismatch (`alt_sig`, `mode_mismatch`).
 - `ldpc.py` (v0.6) — 802.11n QC-LDPC (n 648/1296/1944, rates 1/2..5/6, base matrices of the standard), encoder
   via the dual-diagonal structure, layered normalised min-sum (numpy, batched, early stop), `PacketCoder`: one
   212-byte packet + CRC32 = 1728 bits over 2 shortened codewords (ACM frames: 5/6 punctured to 2016 bits).
@@ -96,7 +102,7 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 38 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 40 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -138,7 +144,7 @@ Reading the RX log: `ok` ≈ 481 frames/s (Alamouti/SISO QPSK); `sig/rs/crc` sma
 QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_rms` 0.005–0.2.
 `same_host_queue_to_rx_latency` is meaningless across two PCs.
 
-## Status (2026-11-25, v0.6.2)
+## Status (2026-11-26, v0.6.3)
 
 - RF loopback (one N321): PASS. RF two N321, Alamouti QPSK, 921 MHz, gain 30/50: success, SNR 26 dB,
   EVM −22 dB, 0 errors while observed. RF1 RX2 branch ~10 dB weaker than RF0 (cond ~31 dB): unresolved.
@@ -194,11 +200,21 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
   0 DATA, ACM 0 switches); v0.6.2 fix: SIM_RX_VERIFIED, 0 missing, loop 124.5 ms, ACM normal. Why the TX ACM got no
   usable feedback from the very start of that run is not proven (no TX report); the new fb_rx_* history fields
   and the "Phản hồi radio yếu" warning will show it on the next RF run.
+- 2026-11-26 RF (v0.6.2, rf_data/20261126, RX reports only): a loose RF0 RX2 SMA made SISO 15 dB weak (fixed by
+  hand); Alamouti QPSK then 0 errors, EVM -30 dB. SMUX QPSK works at cond 13-15 dB (EVM -17..-19) but lost 1.6-3.8 %
+  in bursts every ~11-12 s (pairs 3 s apart); TX clean. External interference: with the TX off rx_rms jumps to
+  0.002-0.004 at the same rhythm, RF0 spectrum shows narrow lines ~75 kHz apart on 920.5-921.5 MHz, ~1000 false
+  "frames"; it follows one antenna (B). Two runs had TX/RX in different modes (ACM vs fixed): 100 % SIG failures.
+- v0.6.3 (no hardware): narrowband canceller + soft weights + LTF check; sim calibrated to the RF loss
+  (comb:75e3:-15:11:3:0.12, SMUX QPSK, SNR 30, cond 14): CER 2.34 % -> 0.09 %, video missing 2.0 % -> 0.08 %;
+  siso/alamouti 0 lost both. Real-time margin lower (alamouti x2.0, SMUX 64QAM x1.14). tools/spectrum_survey.py
+  (receive only), mode-mismatch message, RX diagnostics (|h|, idle level, overflows), rf_fer_curve timelines.
+- Lessons: tighten the SMA connectors, check cond before SMUX (< ~15 dB), survey the spectrum before measuring.
 
 ## Next steps (agreed direction)
 
-1. First RF run of v0.5 (`--mimo siso --acm --fb-link radio`, adaptive video); check ffplay at bitrate switches,
-   TX queue/backlog after downshifts, `plot_run.py` plots.
+1. Spectrum survey (receive only) with both N321, pick the video frequency; then RF run of v0.6.3 SMUX QPSK with the
+   canceller (and `--fec ldpc`), and of `--mimo siso --acm --fb-link radio` (adaptive video, lead 50 ms).
 2. Fix/diagnose the weak RF1 RX2 branch (swap antennas).
 3. Systematic measurements script (loss/EVM vs gain and mode, ACM vs fixed), plots for the report.
 4. Better SNR_eff estimate (noise from 18 null samples per frame smears the ACM CER curves; LDPC thresholds
@@ -206,7 +222,7 @@ QPSK needs EVM < −12 dB, 16QAM < −20 dB; `cond` < 10–15 dB for smux; `rx_r
    DVB-S2-style single-carrier modem.
 
 Docs: `OFDM_N321_*/docs/` — `THIET_KE.md`, `HUONG_DAN_2_N321.md`, `GIAI_MEM_INTERLEAVING.md`, `ACM.md`,
-`PHAN_HOI_RADIO.md`, `MOT_CONG_MANG.md`, `LDPC.md`. Full project report (Vietnamese) is a Claude Doc:
+`PHAN_HOI_RADIO.md`, `MOT_CONG_MANG.md`, `LDPC.md`, `NHIEU_VA_PHO.md`. Full project report (Vietnamese) is a Claude Doc:
 https://claude.ai/artifact/FYd3drF6E8f9nVxDoSjdiX
 
 ## Conventions

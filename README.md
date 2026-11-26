@@ -49,6 +49,9 @@ MIMO-OFDM-USRP/
   trong `report.json` và `tools/plot_run.py` để vẽ đồ thị.
 - **Bộ thu nhạy hơn ở SNR thấp (v0.6):** dò khung trên các anten đang dùng, định thời tinh bằng LTF, vẫn giải khung khi SIG
   hỏng (RS + CRC32 quyết định); BPSK siso AWGN đạt FER 1% ở 5,8 dB thay vì 9,4 dB (`--legacy-sync` = bộ thu cũ).
+- **Chống nhiễu ngoài (v0.6.3):** triệt nhiễu hẹp băng theo quyết định (dãy vạch), trọng số mềm theo sóng mang và symbol,
+  xác nhận khung bằng LTF, báo "LỆCH CHẾ ĐỘ" khi hai máy chạy khác chế độ; `tools/spectrum_survey.py` khảo sát phổ (chỉ thu)
+  ([NHIEU_VA_PHO.md](OFDM_N321_RX/docs/NHIEU_VA_PHO.md)).
 - Máy thu có cửa sổ `--gui`: chòm sao sau cân bằng và phổ 2 kênh.
 - Khung OFDM: FFT 64, CP 16, 48 sóng mang dữ liệu + 4 pilot. Mỗi khung có STF (dùng CSD), 2 LTF ma trận P và SIG có CRC16.
 - Bù CFO, lệch clock (SFO) và pha chung (CPE) trên từng khung, nên chạy được giữa hai máy có clock độc lập.
@@ -79,6 +82,7 @@ Hướng dẫn chi tiết:
 - [PC chỉ có một cổng mạng: N321 #1 tự phát file IQ](OFDM_N321_TX/docs/MOT_CONG_MANG.md)
 - [Đo đặc trưng hệ thống bằng mô phỏng: FER, thông lượng, ACM theo SNR](results/README.md)
 - [LDPC làm mã trong](OFDM_N321_RX/docs/LDPC.md)
+- [Nhiễu ngoài và khảo sát phổ](OFDM_N321_RX/docs/NHIEU_VA_PHO.md)
 
 ## Trạng thái
 
@@ -92,6 +96,8 @@ Hướng dẫn chi tiết:
 | RF hai N321, SISO + ACM + phản hồi radio, 921/922,7 MHz, fb gain 30/60 (19/11/2026) | `RF_RX_VERIFIED`, 0 gói mất, 16QAM 89% khung, SNR 24 dB, EVM −20 dB; video cố định 260 kb/s nên dư dung lượng |
 | Bitrate theo ACM (v0.5), mô phỏng SNR 30→22→14→22→30 dB, 1 MS/s | UDP (alamouti) và radio (siso): `SIM_RX_VERIFIED`, thiếu 0 gói; TS trung bình 525 kb/s (alamouti) so với 260 kb/s cố định |
 | Bitrate theo ACM trên RF | Chưa chạy |
+| RF 26/11: SMUX QPSK (cond 13–15 dB) có nhiễu ngoài (dãy vạch 75 kHz, đợt chu kỳ ~11 s) | mất 1,6–3,8% gói; alamouti 0 lỗi, EVM −30 dB |
+| Bộ thu v0.6.3, mô phỏng nhiễu như RF (SMUX QPSK) | CER 2,34% → 0,09%, gói video thiếu 2,0% → 0,08% |
 | Bộ thu v0.6 ở SNR thấp, mô phỏng (`tools/link_budget.py`) | FER bám giới hạn dữ liệu (genie), chênh ≤ 0,5 dB; BPSK siso AWGN 9,4 → 5,8 dB, kênh cố định 6,1 → 3,1 dB |
 
 ## An toàn RF

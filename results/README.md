@@ -39,6 +39,7 @@ không cần radio: script gọi thẳng `Modulator` / `Demodulator` (numpy), c�
 | `ldpc_vs_rs.png`, `ldpc_summary.json` | FER và thông lượng hữu ích: LDPC so với RS, ACM + LDPC so với ACM + RS; SNR ở FER 1% và lợi ích (dB) |
 | `acm_thresholds.json` | `tools/acm_calibrate.py`: CER theo SNR_eff và ngưỡng ACM cho RS và LDPC |
 | `rf_20261123.csv` / `.png` / `_summary.json` | `tools/rf_fer_curve.py`: lượt RF 23/11, tỉ lệ codeword lỗi mỗi giây theo −EVM, đè đường mô phỏng |
+| `rf_20261126.*`, `rf_20261126_timeline.png` | RF 26/11: FER theo −EVM và lỗi / mức thu / cond theo thời gian từng lượt |
 | `stage_breakdown.csv` / `.png` / `.json` | `tools/link_budget.py`: tỉ lệ lỗi từng khâu của bộ thu (dò khung, định thời, SIG, RS, genie) theo SNR, bộ thu v0.5 và v0.6 |
 
 ## SNR cần để FER ≤ 1% (dB, giải mềm)
@@ -191,6 +192,23 @@ giây đúng lúc đổi mức (EVM lệch > 1,5 dB so với giây trước/sau)
 - 28% codeword lỗi của lượt 16QAM cố định (và 48% của 64QAM) đến từ các bậc gain thấp (−EVM 9–13 dB với 16QAM,
   12–21 dB với 64QAM), không phải từ bất thường của RF. Ở −EVM ≥ 16 dB, 16QAM mất ≤ 0,1%.
 - alamouti QPSK chỉ có dữ liệu ở −EVM 33–36 dB (0 lỗi trên 8654 codeword), nên chưa cho biết ngưỡng.
+
+## RF 26/11 và nhiễu ngoài (v0.6.3)
+
+- `rf_20261126_timeline.png`: các lượt SMUX QPSK (cond 13–20 dB) có đợt codeword lỗi lặp lại khoảng 11–12 s (cặp đợt cách
+  3 s), tổng 1,6–3,8% gói. Các lượt alamouti gần như không lỗi khi RF0/RF1 cân bằng. Lượt SISO 13:10–15:30 là lúc đầu nối
+  RF0 RX2 còn lỏng (mức thu thấp, lỗi khi gain giảm).
+- Bảng −EVM để FER ≤ 1% (`rf_20261126.png`): siso QPSK 6–10 dB (mô phỏng 8,7–9,5); smux QPSK chưa xuống 1% trong dải đo
+  (lỗi theo đợt do nhiễu, không phụ thuộc EVM).
+- Mô phỏng tái hiện bằng `--sim-interf comb:75e3:-15:11:3:0.12`, SMUX QPSK, SNR 30 dB, cond 14 dB:
+
+| Bộ thu | CER | Gói video thiếu |
+|---|---|---|
+| v0.6.2 | 2,34% | 184/9328 (2,0%) |
+| **v0.6.3** (bộ triệt nhiễu hẹp băng) | **0,09%** | **8/9502 (0,08%)** |
+
+  siso và alamouti (kênh cố định) không mất gói ở cả hai phiên bản. Chi tiết:
+  [NHIEU_VA_PHO.md](../OFDM_N321_RX/docs/NHIEU_VA_PHO.md).
 
 ## Lưu ý khi đọc
 
