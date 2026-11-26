@@ -876,6 +876,41 @@ def test_narrowband_canceller_saves_smux_frames():
     print("  SMUX QPSK, comb -18 dB, 30 frames lost: v0.6.2", lost[False], "| v0.6.3", lost[True])
 
 
+def test_spectrum_survey_on_synthetic_iq():
+    """tools/spectrum_survey.py without hardware: a comb (13 lines every 15 kHz) on RF0 only, in pairs of bursts
+    every 3 s (0.8 s apart), next to a clean capture: lines, spacing, burst period, RF0/RF1 and a clean
+    recommendation are found; the tool never builds a transmit stream."""
+    import tempfile
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import spectrum_survey as sv
+    src = (Path(__file__).resolve().parents[1] / "tools" / "spectrum_survey.py").read_text()
+    assert "usrp_sink" not in src.replace("No usrp_sink is created", "")
+    rate, n = 200e3, 2_000_000
+    t = np.arange(n) / rate
+    rng = np.random.default_rng(0)
+    caps = []
+    with tempfile.TemporaryDirectory() as d:
+        for center, comb in ((920.8e6, False), (921.0e6, True)):
+            iq = (0.001 * (rng.standard_normal((2, n)) + 1j * rng.standard_normal((2, n)))).astype(np.complex64)
+            if comb:
+                ph = np.mod(t, 3.0)
+                on = (ph < 0.1) | ((ph >= 0.8) & (ph < 0.9))
+                x = sum(0.004 * np.exp(2j * np.pi * ((m + 0.37) * 15e3 * t + rng.uniform())) for m in range(-6, 7))
+                iq[0] += (x * on).astype(np.complex64)
+            np.savez(Path(d) / f"c{center:.0f}.npz", iq=iq, rate=rate, center=center)
+        res = sv.main(["--iq", str(Path(d) / "c920800000.npz"), str(Path(d) / "c921000000.npz"), "--video-bw", "0.1e6",
+                       "--out", d, "--date", "t"])
+        assert (Path(d) / "survey_t.png").exists() and (Path(d) / "survey_t.json").exists()
+    c = res["captures"][1]
+    assert c["lines"]["RF0"]["count"] >= 12 and abs(c["lines"]["RF0"]["spacing_khz"] - 15.0) < 0.5, c["lines"]
+    assert c["lines"]["RF1"]["count"] == 0 and c["burst_channel"] == "RF0" and c["rf0_vs_rf1_in_bursts_db"] > 10
+    lags = [p["lag_s"] for p in c["period_candidates"]]
+    assert any(abs(x - 3.0) < 0.15 for x in lags) and any(abs(x - 0.8) < 0.1 for x in lags), lags
+    assert res["captures"][0]["lines"]["RF0"]["count"] == 0
+    assert res["recommendation"][0]["center_mhz"] < 920.95                     # away from the comb at 921 MHz
+
+
 def test_ts_splice_helpers():
     from ofdm321.video_adapt import ContinuityRewriter, is_keyframe_start, ts_pid
     assert is_keyframe_start(_ts(256, 3, keyframe=True)) and not is_keyframe_start(_ts(256, 3))

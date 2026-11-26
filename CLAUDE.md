@@ -96,7 +96,7 @@ the root too. The three machine folders keep only `scripts/`, `config/`, `docs/`
 ## Commands
 
 ```bash
-python3 tests/test_modem.py                       # 35 tests (~1 min, needs ffmpeg), must all PASS before committing
+python3 tests/test_modem.py                       # 38 tests (~1 min, needs ffmpeg), must all PASS before committing
 bash tools/ci_sim.sh 10 --rate 400e3              # short 2-process sim; CI (.github/workflows/ci.yml) runs both
 python3 tools/sim_sweep.py                        # FER / goodput / ACM vs SNR, numpy only -> results/ (~10 min, 16 cores)
 python3 tools/link_budget.py                      # per-stage loss (detect/timing/SIG/RS/genie) vs SNR -> results/stage_breakdown.*
@@ -104,6 +104,11 @@ python3 tools/sim_sweep.py --fec ldpc             # LDPC part only -> results/ld
 python3 tools/acm_calibrate.py --out results/acm_thresholds.json   # ACM thresholds per inner code
 python3 tools/bench_sim.py --decoder              # LDPC decoder cw/s, Mb/s; bench_sim.py MIMO MOD RATE --fec ldpc [--acm]
 python3 tools/rf_fer_curve.py rf_data/<date>      # RF codeword error rate per second vs -EVM + sim curves -> results/rf_<date>.*
+# spectrum survey, RECEIVE ONLY (never opens a TX stream; ask the user first, N321 connected, nothing transmitting):
+python3 tools/spectrum_survey.py --args addr=192.168.180.95 --gain 50 --seconds 25 --save-iq runs/survey_iq
+python3 tools/spectrum_survey.py --iq runs/survey_iq/*.npz   # offline -> results/survey_<date>.png/.json
+#   waterfall + power vs time per centre (920.5..922.5 MHz), narrow lines + spacing, burst period, RF0 vs RF1,
+#   cleanest 1 MHz video centre outside 922.7 +- 1 MHz
 cd OFDM_N321_TX && python3 tools/probe_n321.py --addr 192.168.180.3 --stream   # device + network check, no RF
 
 # two-process simulation on one PC (RX first, then TX in another terminal)
